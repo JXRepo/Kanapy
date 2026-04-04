@@ -1681,52 +1681,6 @@ class EBSDmap:
             else:
                 bads.add(pix)  # no valid neighbor found add pix again to list
 
-        def _plot_hex_rgb(xy, rgb, dx, dy=None, ax=None):
-            """
-            xy  : (N,2) array of pixel centers
-            rgb : (N,3) array, either 0..255 or 0..1
-            dx  : horizontal pixel spacing (hex width)
-            dy  : vertical row spacing (optional).
-                  If None, assumed dy = sqrt(3)/2 * dx (pointy-top hex)
-            """
-            if dy is None:
-                dy = np.sqrt(3) / 2 * dx
-
-            if ax is None:
-                fig, ax = plt.subplots(figsize=(6, 6))
-
-            # normalize rgb if needed
-            rgb = np.asarray(rgb)
-            if rgb.max() > 1.0:
-                rgb = rgb / 255.0
-
-            # hex geometry (pointy-top)
-            r = dx / 2.0
-            h = dy
-
-            # 6 vertices relative to center
-            angles = np.deg2rad([30, 90, 150, 210, 270, 330])
-            verts_unit = np.column_stack([r * np.cos(angles),
-                                          r * np.sin(angles)])
-
-            # build polygon list
-            polys = [xy[i] + verts_unit for i in range(len(xy))]
-
-            coll = PolyCollection(polys,
-                                  facecolors=rgb,
-                                  edgecolors='none',
-                                  linewidths=0)
-
-            ax.add_collection(coll)
-
-            ax.set_aspect('equal')
-            ax.autoscale_view()
-            ax.set_xlabel("x")
-            ax.set_ylabel("y")
-            plt.show()
-
-            return ax
-
         # interpret parameters
         if plot is not None:
             show_plot = plot
@@ -1794,14 +1748,7 @@ class EBSDmap:
                 mask = self.emap.phase_id == ind
                 ori_e = Orientation.from_euler(self.emap[mask].orientations.in_euler_fundamental_region())
                 ori_q = np.stack([ori_e.a, ori_e.b, ori_e.c, ori_e.d]).T
-                rgb_val = ipf_key.orientation2color(ori_e)
-                #ax = _plot_hex_rgb(xy, rgb_val, self.dx, self.dy)
-                #xg, yg, phase_g, ci_g, quat_g = \
-                #    resample_ebsd_to_rect_grid(xy[self.emap.is_indexed],
-                #                               self.emap.phase_id[self.emap.is_indexed],
-                #                               ori_q,
-                #                               val_ci[self.emap.is_indexed],
-                #                               nx=self.sh_y, ny=self.sh_x)
+                #rgb_val = ipf_key.orientation2color(ori_e)
                 xg, yg, phase_g, ci_g, quat_g = \
                     resample_ebsd_to_rect_grid(xy[mask],
                                                self.emap.phase_id[mask],
@@ -2393,7 +2340,7 @@ def get_ipf_colors(ori_list, color_key=0):
 
 def createOriset(num, ang, omega, hist=None, shared_area=None,
                  cs=None, degree=True, Nbase=10000, resolution=None,
-                 res_low=5, res_high=25, res_step=2, lim=5,
+                 res_low=5, res_high=25, res_step=2, lim=5, hw_init=None,
                  verbose=False, full_output=False):
     """
     Create a set of Euler angles according to an ODF defined by input orientations and kernel half-width
