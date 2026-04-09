@@ -120,7 +120,9 @@ def merge_nodes(G, node1, node2):
     """
     # merge pixel lists of node 1 into node 2, delete node 1
     G.nodes[node2]['pixels'] = np.concatenate((G.nodes[node1]['pixels'], G.nodes[node2]['pixels']))
-    ntot = len(G.nodes)
+    npix1 = G.nodes[node1]['npix']
+    npix2 = G.nodes[node2]['npix']
+    ntot = npix1 + npix2
     G.nodes[node2]['ori_av'] = (G.nodes[node1]['ori_av'] * G.nodes[node1]['npix'] +
                                 G.nodes[node2]['ori_av'] * G.nodes[node2]['npix']) / ntot
     G.nodes[node2]['npix'] = ntot  # update length

@@ -162,7 +162,7 @@ def resample_quat_knn_markley(quat_src, idx, dist, p=2.0):
 def resample_ebsd_to_rect_grid(
     xy, phase, quat, iq,
     dx_out=None, dy_out=None, nx=None, ny=None, bounds=None,
-    k_phase=7, k_iq=7, k_quat=9,
+    k_phase=1, k_iq=1, k_quat=1,
     p_iq=2.0, p_quat=2.0
 ):
     """
