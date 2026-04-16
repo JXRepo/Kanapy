@@ -2162,6 +2162,78 @@ class EBSDmap:
             plt.colorbar(label='Grain Number')
             plt.show()
 
+
+
+    def plot_graph_with_black_marker(self, iphase=0, show_ids=False, marker_size=12, line_width=1.0):
+        """
+        Plot the microstructure graph on top of the EBSD IPF map
+
+        Parameters
+        ----------
+        iphase : int, optional
+            Phase index in self.ms_data. Default is 0.
+        show_ids : bool, optional
+            If True, draw node IDs next to the node centers. Default is False.
+        marker_size : float, optional
+            Marker size for node centers. Default is 12.
+        line_width : float, optional
+            Line width for graph edges. Default is 1.0.
+
+        Notes
+        -----
+        - The EBSD IPF map is used as the background image.
+        - Node centers are drawn as black markers.
+        - Graph edges are drawn as black lines connecting neighboring node centers.
+        - Stored node centers are in physical coordinates and are converted back
+          to pixel coordinates for plotting on the image.
+        """
+        data = self.ms_data[iphase]
+        G = data["graph"]
+
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.imshow(data["rgb_im"].reshape((self.sh_x, self.sh_y, 3)))
+
+        for u, v in G.edges():
+            cu = G.nodes[u].get("center", None)
+            cv = G.nodes[v].get("center", None)
+            if cu is None or cv is None:
+                continue
+
+            xu = cu[1] / self.dy
+            yu = cu[0] / self.dx
+
+            xv = cv[1] / self.dy
+            yv = cv[0] / self.dx
+
+            ax.plot([xu, xv], [yu, yv], color="black", linewidth=line_width)
+
+        for node_id, node in G.nodes.items():
+            ctr = node.get("center", None)
+            if ctr is None:
+                continue
+
+            x = ctr[1] / self.dy
+            y = ctr[0] / self.dx
+
+            ax.plot(x, y, "ko", markersize=marker_size / 4)
+
+            if show_ids:
+                ax.text(
+                    x,
+                    y,
+                    str(node_id),
+                    color="white",
+                    fontsize=8,
+                    ha="center",
+                    va="center",
+                )
+
+        ax.set_title(f"Phase #{data['index']} ({data['name']}): Microstructure graph")
+        plt.show()
+
+
+
+
     def plot_mo_map(self):
         """
         Plot the misorientation map for all phases
