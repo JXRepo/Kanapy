@@ -1,0 +1,35 @@
+{
+  "Grain type": "Elongated",
+  "Equivalent diameter": {
+    "sig": 0.25,
+    "scale": 10.0,
+    "loc": 0.0,
+    "cutoff_min": 7.0,
+    "cutoff_max": 14.0
+  },
+  "Aspect ratio": {
+    "sig": 0.25,
+    "scale": 1.7,
+    "loc": 0.0,
+    "cutoff_min": 1.0,
+    "cutoff_max": 2.7
+  },
+  "Tilt angle": {
+    "kappa": 1.0,
+    "loc": 1.5707963267948966,
+    "cutoff_min": 0.0,
+    "cutoff_max": 3.141592653589793
+  },
+  "RVE": {
+    "sideX": 24.0,
+    "sideY": 24.0,
+    "sideZ": 24.0,
+    "Nx": 20,
+    "Ny": 20,
+    "Nz": 20
+  },
+  "Simulation": {
+    "periodicity": false,
+    "output_units": "um"
+  }
+}

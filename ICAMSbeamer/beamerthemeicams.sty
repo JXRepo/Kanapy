@@ -1,0 +1,217 @@
+\mode<presentation>
+% We need a few additional packages. They are used for the dotted
+% footer.
+\RequirePackage{ifthen}
+\RequirePackage{tikz}
+\usetikzlibrary{calc}
+% The following provides the macros \ifaspectratio{169}{true}{false} and
+% \xifaspectratio{
+%   {169}{We're on 16:9}
+%   {43}{We're on 4:3}
+% }[None of the above]
+% Courtesy egreg via tex.sx https://tex.stackexchange.com/questions/123106/detect-aspect-ratio-in-beamer
+% and updated to newer (since 2015-ish) l3 functions.
+\RequirePackage{expl3}
+\ExplSyntaxOn
+\typeout{ifaspectratio definition}
+\NewDocumentCommand{\ifaspectratio}{mmm}
+ {
+  % Recover the option from those passed to the class
+  \keys_set:nf { zunbeltz/beameroptions } { \use:c { opt@beamer.cls } }
+  \str_if_eq:nVTF { #1 } \l_zunbeltz_aspectratio_tl { #2 } { #3 }
+ }
+\typeout{xifaspectratio definition}
+\NewDocumentCommand{\xifaspectratio}{mO{}}
+ {
+  % Recover the option from those passed to the class
+  \keys_set:nf { zunbeltz/beameroptions } { \use:c { opt@beamer.cls } }
+  \str_case:VnF \l_zunbeltz_aspectratio_tl { #1 } { #2 }
+ }
+\typeout{define the keys}
+% We need to define only one key, the other are treated as `unknown'
+\keys_define:nn { zunbeltz/beameroptions }
+ {
+  aspectratio .tl_set:N = \l_zunbeltz_aspectratio_tl,
+  aspectratio .initial:n = 43,
+  unknown .code:n = {},
+ }
+
+\typeout{define the varints}
+% Generate the variants we need
+\cs_generate_variant:Nn \keys_set:nn { nf }
+\cs_generate_variant:Nn \str_if_eq:nnTF { nV }
+\cs_generate_variant:Nn \str_case:nnn { V }
+\ExplSyntaxOff
+\makeatletter
+% Parts of this style are taken from the ICAMS poster template by
+% Stephan Schulz. It is also based on the default beamer theme.
+\usetheme{default}
+% The ICAMS blue is now the official RUB blue. For easy change only
+% the icams@color* values are actually used in the code.
+\definecolor{icams@RUBblue}{cmyk}{1,0.5,0,0.6}
+\definecolor{icams@RUBgreen}{cmyk}{0.5,0,1,0}
+\definecolor{icams@RUBgrey}{cmyk}{0.03,0.03,0.03,0.55}
+\colorlet{icams@colorblue}{icams@RUBblue}
+\colorlet{icams@colorgreen}{icams@RUBgreen}
+\colorlet{icams@colorgrey}{icams@RUBgrey}
+% The colours are inspired by the corporate colours, but are slightly
+% changed in brightness. The original colours do not transfer very well
+% to presentations, e.g. the green is too bright to be used as text
+% colour. And using green as an alert colour is just not very efficient.
+\setbeamercolor{structure}{fg=icams@colorblue}
+\setbeamercolor{alerted text}{fg=red!70!black}
+\setbeamercolor{example text}{fg=icams@colorgreen!60!black}
+\setbeamercolor{title page}{use=structure,bg=structure.fg!8}
+\setbeamercolor{title}{use=structure,bg=structure.fg!8}
+\setbeamercolor{frametitle}{use=structure,bg=structure.fg!8}
+\setbeamercolor{framesubtitle}{use=frametitle,fg=frametitle.fg!60}
+% Load the used images into macros, so we are sure they are not included
+% multiple times in the output file.
+\pgfdeclareimage[height=0.5cm]{institute-logo_sml}{logos/ICAMS_noclaim.png}
+\pgfdeclareimage[height=0.5cm]{university-logo_sml}{logos/RUB_noclaim.png}
+\pgfdeclareimage[height=1.3cm]{institute-logo}{logos/ICAMS.png}
+\pgfdeclareimage[height=0.7cm]{university-logo}{logos/RUB.png}
+% The dots at the bottom are generated using TikZ and saved in a box.
+% Otherwise, it would be generated multiple times. That would take
+% quite some time to compile.
+\newsavebox{\icams@dots} % use with \usebox{\icams@dots}
+\savebox{\icams@dots}{%
+  \begin{tikzpicture}[scale=0.69]
+    \coordinate (SW) at (0,0);
+    \def\drad{0.07579cm}
+      % Total width: 10cm (then rescaled)
+      % 38 dots width, 2 dots height, 27th is blue
+      % 10/38 cm separation: 0.263158, offset: 0.131580
+      \newcommand{\dotsoff}{0.13158}
+      \newcommand{\dotsoffv}{0.13158cm}
+      \newcommand{\dotssep}{0.26316cm}
+      \xifaspectratio{%
+        {43}{\newcommand{\ndotsx}{38}\newcommand{\colordotx}{27}}%
+        {169}{\newcommand{\ndotsx}{55}\newcommand{\colordotx}{41}}%
+      }[\newcommand{\ndotsx}{38}\typeout{WARNING: aspect ratio not supported by beamer theme!}]
+      \foreach \x in {0,...,\ndotsx} {
+        \ifthenelse{\equal{\colordotx}{\x}}{
+          \fill[icams@colorblue] ($(SW) + (\dotsoff,\dotsoffv) + (0,\dotssep) + \x*(\dotssep,0)$) circle [radius=\drad] node (C\x) {};
+        }{
+          \fill[icams@colorgrey] ($(SW) + (\dotsoff,\dotsoffv) + (0,\dotssep) + \x*(\dotssep,0)$) circle [radius=\drad] node (C\x) {};
+        }
+        \fill[icams@colorgrey] ($(SW) + (\dotsoff,\dotsoffv) + \x*(\dotssep,0)$) circle [radius=\drad] node (C\x) {};
+      }
+  \end{tikzpicture}%
+}
+% Set the different beamer templates
+\setbeamertemplate{frametitle continuation}[from second]
+% \raisebox used to vertically center elements
+% \totalheight is \height+\depth
+% images have their baseline at the bottom, so \height suffices
+\newcommand\icams@footersep{0.3cm}
+\newcommand\icams@footermargin{\Gm@lmargin}
+\setbeamertemplate{footline}{%
+%  \hrule
+  \vspace*{\icams@footersep}%
+  \hspace{\icams@footermargin}%
+  \raisebox{-0.5\height}{\pgfuseimage{institute-logo_sml}}%
+  \hfill%
+  \raisebox{-0.5\height}{\usebox{\icams@dots}}%
+  \hfill%
+  \raisebox{-0.5\height}{\pgfuseimage{university-logo_sml}}%
+  \raisebox{-0.5\height}{%
+    \parbox{\icams@footermargin}{%
+      \centering
+      \textcolor{icams@colorblue}{\normalsize\insertframenumber}%
+    }%
+  }%
+  \vspace*{\icams@footersep}%
+}%
+\setbeamercovered{transparent}
+% disable navigation symbols
+\beamertemplatenavigationsymbolsempty
+
+% Taken from beamerinnerthemedefault.sty
+\newlength{\icams@titleboxheight}
+\xifaspectratio{
+  {43}{\setlength{\icams@titleboxheight}{6.2cm}}
+  {169}{\setlength{\icams@titleboxheight}{5.6cm}}
+}[\setlength{\icams@titleboxheight}{6.2cm}\typeout{WARNING aspect ratio not supported by beamer theme!}]
+\newcommand\icams@boxsep{5pt}
+\setbeamertemplate{title page}
+{
+  \vspace*{-\Gm@tmargin}%
+  \vspace*{-6pt}%
+  \makebox[\textwidth][l]{%
+    \hspace*{-\Gm@lmargin}%
+    \includegraphics[width=\paperwidth]{logos/banner.png}%
+  }
+  \begingroup
+  \centering%
+  \begin{beamercolorbox}[wd=\paperwidth,sep=0pt,center]{title page}
+    \begin{minipage}[c][\icams@titleboxheight][c]{\textwidth}
+      \begin{beamercolorbox}[sep=\icams@boxsep,center]{title}
+        \vfill
+        \usebeamerfont{title}\inserttitle\par%
+        \ifx\insertsubtitle\@empty%
+        \else%
+        \vskip0.25em%
+        {\usebeamerfont{subtitle}\usebeamercolor[fg]{subtitle}\insertsubtitle\par}%
+        \fi%
+      \end{beamercolorbox}%
+      \vskip0.8em\par
+      \begin{beamercolorbox}[sep=\icams@boxsep,center]{author}
+        \usebeamerfont{author}\insertauthor
+      \end{beamercolorbox}
+      \begin{beamercolorbox}[sep=\icams@boxsep,center]{institute}
+        \usebeamerfont{institute}\insertinstitute
+      \end{beamercolorbox}
+      \begin{beamercolorbox}[sep=\icams@boxsep,center]{date}
+        \usebeamerfont{date}\insertdate
+      \end{beamercolorbox}%\vskip0.5em
+    \end{minipage}%
+  \end{beamercolorbox}%
+  \endgroup
+  \vfill%
+  \makebox[\textwidth][l]{\hspace*{-\Gm@lmargin}%
+    \parbox{\paperwidth}{%
+      \hfill%
+      \raisebox{-0.5\height}{\pgfuseimage{institute-logo}}%
+      \hfill%
+      \hfill%
+      \raisebox{-0.5\height}{\pgfuseimage{university-logo}}%
+      \hfill\null%
+    }%
+  }%
+}
+% Create a convenience command to print title page. A few options
+% are required to get the proper look. This way they don't have to
+% be remembered.
+\newcommand\icamstitlepage{%
+  \begin{frame}[t,plain,noframenumbering]
+    \titlepage
+  \end{frame}%
+}
+\newcommand\icamsexamplepage{%
+  \begin{frame}{This Frame Does Have a Title}
+    \framesubtitle{And a not Very Short Subtitle}
+    \begin{block}{Blocks Also Have Titles}
+      \begin{itemize}
+        \item First level
+          \begin{itemize}
+            \item Second level
+              \begin{itemize}
+                \item Third level, with \alert{alerted} text
+              \end{itemize}
+          \end{itemize}
+      \end{itemize}
+    \end{block}
+    \begin{block}{An Equation}
+      \begin{equation}
+        T = \sum_i \frac{m_i}2 \vb v_i^2
+      \end{equation}
+    \end{block}
+    \begin{example}
+      \begin{itemize}
+        \item This is just an example\ldots
+      \end{itemize}
+    \end{example}
+  \end{frame}%
+}
+\makeatother

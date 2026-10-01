@@ -1,0 +1,788 @@
+{
+  "kanapy_version": "6.5.5",
+  "kanapy_source": "src/kanapy/__init__.py",
+  "git_commit": "19713e5612fdaaea2acc4378b2c897be3f54dd2d",
+  "controls": {
+    "pinch": {
+      "weight_difference": 0.0,
+      "grain_volumes": {
+        "1": 0.8797966269841271,
+        "2": 0.12020337301587303
+      },
+      "background_resolution": 8,
+      "surface_triangles": 1712,
+      "vertex_link": {
+        "vertex": 538,
+        "edges": [
+          [
+            376,
+            394
+          ],
+          [
+            376,
+            514
+          ],
+          [
+            378,
+            396
+          ],
+          [
+            378,
+            516
+          ],
+          [
+            394,
+            533
+          ],
+          [
+            396,
+            540
+          ],
+          [
+            514,
+            535
+          ],
+          [
+            516,
+            541
+          ],
+          [
+            533,
+            537
+          ],
+          [
+            535,
+            537
+          ],
+          [
+            540,
+            542
+          ],
+          [
+            541,
+            542
+          ]
+        ],
+        "components": [
+          [
+            376,
+            394,
+            514,
+            533,
+            535,
+            537
+          ],
+          [
+            378,
+            396,
+            516,
+            540,
+            541,
+            542
+          ]
+        ],
+        "degrees": {
+          "394": 2,
+          "376": 2,
+          "514": 2,
+          "396": 2,
+          "378": 2,
+          "516": 2,
+          "533": 2,
+          "540": 2,
+          "535": 2,
+          "541": 2,
+          "537": 2,
+          "542": 2
+        },
+        "one_cycle": false
+      },
+      "sampled_diagnostics": {
+        "contacts": [
+          {
+            "point": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "grain_ids": [
+              1,
+              2
+            ],
+            "kind": "singular_contact",
+            "rank": 0,
+            "singular_values": [
+              0.0
+            ],
+            "residual": 0.0,
+            "branches": [
+              [
+                1,
+                [
+                  0,
+                  0,
+                  0
+                ]
+              ],
+              [
+                2,
+                [
+                  0,
+                  0,
+                  0
+                ]
+              ]
+            ],
+            "trace": [],
+            "probe": {
+              "status": "suspected_non_manifold",
+              "suspect_grain_ids": [
+                1,
+                2
+              ],
+              "observations": [
+                {
+                  "radius": 0.03174802103936399,
+                  "sphere_level": 1,
+                  "grains": {
+                    "1": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    },
+                    "2": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    }
+                  }
+                },
+                {
+                  "radius": 0.015874010519681996,
+                  "sphere_level": 1,
+                  "grains": {
+                    "1": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    },
+                    "2": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    }
+                  }
+                },
+                {
+                  "radius": 0.007937005259840998,
+                  "sphere_level": 1,
+                  "grains": {
+                    "1": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    },
+                    "2": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    }
+                  }
+                },
+                {
+                  "radius": 0.03174802103936399,
+                  "sphere_level": 2,
+                  "grains": {
+                    "1": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    },
+                    "2": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    }
+                  }
+                },
+                {
+                  "radius": 0.015874010519681996,
+                  "sphere_level": 2,
+                  "grains": {
+                    "1": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    },
+                    "2": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    }
+                  }
+                },
+                {
+                  "radius": 0.007937005259840998,
+                  "sphere_level": 2,
+                  "grains": {
+                    "1": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    },
+                    "2": {
+                      "loops": 2,
+                      "irregular": 0,
+                      "sector": "resolved",
+                      "ties": 0
+                    }
+                  }
+                }
+              ],
+              "note": "Spherical link sampling is local evidence, not a topological certificate.",
+              "classification_note": "Rank loss alone does not establish contact dimension."
+            }
+          },
+          {
+            "point": [
+              0.25000000005000006,
+              0.25000000005000006,
+              0.9999999998999999
+            ],
+            "grain_ids": [
+              1,
+              2
+            ],
+            "kind": "ordinary_interface",
+            "rank": 1,
+            "singular_values": [
+              1.0911236357534961
+            ],
+            "residual": 1.1102230246251565e-16,
+            "branches": [
+              [
+                1,
+                [
+                  0,
+                  0,
+                  0
+                ]
+              ],
+              [
+                2,
+                [
+                  0,
+                  0,
+                  0
+                ]
+              ]
+            ],
+            "trace": [],
+            "probe": {
+              "status": "unresolved_box_boundary",
+              "reason": "A full probing sphere is outside the domain."
+            }
+          },
+          {
+            "point": [
+              0.25000000003968503,
+              0.749999999960315,
+              7.937005259113582e-11
+            ],
+            "grain_ids": [
+              1,
+              2
+            ],
+            "kind": "ordinary_interface",
+            "rank": 1,
+            "singular_values": [
+              1.0911236357985161
+            ],
+            "residual": 0.0,
+            "branches": [
+              [
+                1,
+                [
+                  0,
+                  0,
+                  0
+                ]
+              ],
+              [
+                2,
+                [
+                  0,
+                  0,
+                  0
+                ]
+              ]
+            ],
+            "trace": [],
+            "probe": {
+              "status": "unresolved_box_boundary",
+              "reason": "A full probing sphere is outside the domain."
+            }
+          },
+          {
+            "point": [
+              0.25000000005000006,
+              0.7499999999499999,
+              0.9999999998999999
+            ],
+            "grain_ids": [
+              1,
+              2
+            ],
+            "kind": "ordinary_interface",
+            "rank": 1,
+            "singular_values": [
+              1.0911236357534961
+            ],
+            "residual": 1.1102230246251565e-16,
+            "branches": [
+              [
+                1,
+                [
+                  0,
+                  0,
+                  0
+                ]
+              ],
+              [
+                2,
+                [
+                  0,
+                  0,
+                  0
+                ]
+              ]
+            ],
+            "trace": [],
+            "probe": {
+              "status": "unresolved_box_boundary",
+              "reason": "A full probing sphere is outside the domain."
+            }
+          }
+        ],
+        "unresolved": [],
+        "settings": {
+          "resolution": 4,
+          "adaptive": true,
+          "cost_tolerance": 1e-08,
+          "rank_tolerance": 1e-06,
+          "probe_radius": 0.03174802103936399,
+          "sphere_level": 1,
+          "max_candidates": 60,
+          "seeds_per_tuple": 4,
+          "probe_regular": 12,
+          "trace_step": 0.019842513149602496,
+          "trace_steps": 6
+        },
+        "discovery": {
+          "sample_points": 461,
+          "attempted": 7,
+          "omitted_by_budget": 0,
+          "omitted_by_tuple_limit": 457,
+          "rejected_nonminimal": 0,
+          "budget_exhausted": false,
+          "periodic_branch_candidates": 0
+        },
+        "certified": false
+      }
+    },
+    "neck": {
+      "weight_difference": 0.025,
+      "grain_volumes": {
+        "1": 0.802572613378685,
+        "2": 0.1974273866213152
+      },
+      "background_resolution": 8,
+      "surface_triangles": 2624
+    },
+    "split": {
+      "weight_difference": -0.025,
+      "grain_volumes": {
+        "1": 0.9306995701058203,
+        "2": 0.0693004298941799
+      },
+      "background_resolution": 8,
+      "surface_triangles": 1792
+    },
+    "regular_link": {
+      "vertex": 62,
+      "edges": [
+        [
+          56,
+          57
+        ],
+        [
+          56,
+          61
+        ],
+        [
+          57,
+          63
+        ],
+        [
+          61,
+          67
+        ],
+        [
+          63,
+          68
+        ],
+        [
+          67,
+          68
+        ]
+      ],
+      "components": [
+        [
+          56,
+          57,
+          61,
+          63,
+          67,
+          68
+        ]
+      ],
+      "degrees": {
+        "57": 2,
+        "56": 2,
+        "61": 2,
+        "63": 2,
+        "67": 2,
+        "68": 2
+      },
+      "one_cycle": true
+    },
+    "ordinary_junction": {
+      "faces": 467,
+      "interface_faces": 217,
+      "exterior_faces": 250,
+      "patches": 21,
+      "grains": 4,
+      "shells": 4,
+      "junction_edges": 25,
+      "junction_curves": 4,
+      "junction_vertices": 5,
+      "higher_order_vertices": 1,
+      "view": "Internal interfaces only; box faces omitted."
+    }
+  },
+  "local": {
+    "before": {
+      "grains": {
+        "1": {
+          "voxels": 128,
+          "face_components": 2,
+          "defect_incident_voxels": 2
+        },
+        "2": {
+          "voxels": 45,
+          "face_components": 1,
+          "defect_incident_voxels": 0
+        },
+        "3": {
+          "voxels": 1158,
+          "face_components": 1,
+          "defect_incident_voxels": 0
+        }
+      },
+      "changed_voxels": 0,
+      "relative_volume_change": {
+        "1": 0.0,
+        "2": 0.0,
+        "3": 0.0
+      },
+      "all_local_links_valid": false,
+      "all_grains_face_connected": false
+    },
+    "greedy": {
+      "grains": {
+        "1": {
+          "voxels": 134,
+          "face_components": 1,
+          "defect_incident_voxels": 0
+        },
+        "2": {
+          "voxels": 43,
+          "face_components": 2,
+          "defect_incident_voxels": 0
+        },
+        "3": {
+          "voxels": 1154,
+          "face_components": 1,
+          "defect_incident_voxels": 0
+        }
+      },
+      "changed_voxels": 6,
+      "relative_volume_change": {
+        "1": 0.046875,
+        "2": -0.044444444444444446,
+        "3": -0.0034542314335060447
+      },
+      "all_local_links_valid": true,
+      "all_grains_face_connected": false
+    },
+    "joint": {
+      "grains": {
+        "1": {
+          "voxels": 134,
+          "face_components": 1,
+          "defect_incident_voxels": 0
+        },
+        "2": {
+          "voxels": 47,
+          "face_components": 1,
+          "defect_incident_voxels": 0
+        },
+        "3": {
+          "voxels": 1150,
+          "face_components": 1,
+          "defect_incident_voxels": 0
+        }
+      },
+      "changed_voxels": 10,
+      "relative_volume_change": {
+        "1": 0.046875,
+        "2": 0.044444444444444446,
+        "3": -0.0069084628670120895
+      },
+      "all_local_links_valid": true,
+      "all_grains_face_connected": true
+    }
+  },
+  "context": {
+    "random_seed": 20261001,
+    "box_um": [
+      24,
+      24,
+      24
+    ],
+    "generation_metadata": {
+      "git_commit": "19713e5612fdaaea2acc4378b2c897be3f54dd2d",
+      "kanapy_version": "6.5.5",
+      "random_seed": 20261001,
+      "note": "Recorded for the contextual RVE generated during this presentation task. Packing reached zero remaining overlap contacts."
+    },
+    "packing_fill_factor": 0.25,
+    "packing_relaxation_limit": 500,
+    "periodic": false,
+    "original_particles": 23,
+    "voxel_shape": [
+      20,
+      20,
+      20
+    ],
+    "surface_background_resolution": 6,
+    "surface_triangles": 7554,
+    "grain_volumes": {
+      "1": 233.78208710410217,
+      "2": 247.26797674928068,
+      "3": 233.1739769445515,
+      "4": 297.0932335710031,
+      "5": 345.6724192049337,
+      "6": 331.7296747369943,
+      "7": 350.22400702407504,
+      "8": 382.2643116105009,
+      "9": 436.5564908127238,
+      "10": 484.8900929269117,
+      "11": 542.3653465774647,
+      "12": 559.6012343668243,
+      "13": 597.5094104929349,
+      "14": 572.9978536804049,
+      "15": 675.4094316706107,
+      "16": 691.4399859166804,
+      "17": 757.9841143405437,
+      "18": 805.5058728398874,
+      "19": 883.7345820920136,
+      "20": 987.3460018605242,
+      "21": 965.7004065737899,
+      "22": 1097.115124269085,
+      "23": 1344.6363646341592
+    },
+    "packing_relaxation": {
+      "enabled": true,
+      "converged": true,
+      "steps": 143,
+      "initial_contacts": 13,
+      "remaining_contacts": 0,
+      "contact_history": [
+        13,
+        12,
+        12,
+        11,
+        12,
+        13,
+        13,
+        14,
+        14,
+        14,
+        14,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        12,
+        13,
+        12,
+        13,
+        12,
+        11,
+        12,
+        11,
+        12,
+        10,
+        10,
+        9,
+        10,
+        9,
+        8,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        5,
+        6,
+        4,
+        6,
+        4,
+        6,
+        4,
+        6,
+        4,
+        6,
+        4,
+        4,
+        4,
+        3,
+        4,
+        3,
+        4,
+        2,
+        3,
+        3,
+        2,
+        1,
+        1,
+        0
+      ],
+      "stop_reason": "complete"
+    },
+    "visual_crop": "Upper coordinate octant omitted in voxel and surface views; source remains complete."
+  },
+  "periodic": {
+    "centers": [
+      [
+        0.05,
+        0.5,
+        0.5
+      ],
+      [
+        0.55,
+        0.5,
+        0.5
+      ]
+    ],
+    "periodic": true,
+    "slice_z": 0.5
+  }
+}
