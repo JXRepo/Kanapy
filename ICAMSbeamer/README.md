@@ -1,68 +1,166 @@
-# Kanapy grain boundary proposal
+﻿# Kanapy grain boundary discussion
 
-Open `talk.pdf`. The presentation has a title, 14 main slides and six technical
-backup slides. `talk.tex` is the editable source; `speaker_notes_zh.md` explains
-every page in Chinese.
+Open `talk.pdf` for the latest version. The corrected PDF has replaced the official file;
+the temporary PDF has been removed. This short discussion has six slides, with no title page or
+appendix: the repair target in Kanapy, the problem, then four planned steps. `talk.tex` is the editable source;
+`speaker_notes_zh.md` contains Chinese speaking notes and technical details for
+questions. `slide_overview.png` shows all six pages together.
 
-All presentation files and the 15 figures used by the slides are in this
-directory. All figures are PNG images. `slide_overview.png`
-shows all pages together. `logos/` is the only subdirectory and contains the
-five RUB/ICAMS branding images used by the theme, also in PNG format.
+## Slides
+
+1. **Repair target: generate_grains().** Show packed ellipsoids, the existing voxel
+   volume mesh and shared grain boundary surfaces from the same RVE, followed by
+   a separate cube bulk mesh illustration. The columns are `Packed ellipsoids`,
+   `Voxel mesh`, `GB surface` and `Bulk mesh (next)`. Repair belongs in the APD partition
+   and grain boundary surface route of `generate_grains()`. The existing
+   `voxelize()` → `smoothen()` → `write_abq()` volume mesh route is also identified.
+2. **The problem: a grain touches itself.** Compare an ordinary grain junction
+   with a point contact within one grain.
+3. **Locate the bad connection.** Compare regular and pinched vertex links.
+4. **Change only a small region.** Use a manual voxel demonstration to show fixed
+   exterior labels and the need to consider neighbouring grains. This is a
+   proposed constraint, not an implemented APD repair.
+5. **Check every affected grain.** Compare the original example, a rejected edit
+   and a manually constructed joint candidate.
+6. **Validate the surface for bulk meshing.** Check topology and surface triangle
+   quality, then try bulk meshing. Mechanical validation can follow later.
+
+## Technical scope
+
+Alexander Hartmaier's message identifies a remaining problem in `generate_grains()`:
+parts of one grain can touch only at a point, making that grain's boundary
+non-manifold. The goal is a watertight, smooth grain boundary surface with usable
+triangles that can seed bulk mesh generation. Normal junctions between distinct
+grains must be retained. The message does not require a particular bulk element type.
+
+Kanapy already produces voxel hexahedral volume meshes. `smoothen()` moves their
+nodes to smooth grain boundaries, and `write_abq()` exports the voxel or smoothed
+mesh. Hartmaier describes the older smoothing route as having poor mesh quality.
+This presentation targets the separate APD surface route, not the absence of
+volume meshing in Kanapy.
+
+In `examples/RVE_generation/create_rve.py`, lines 31, 33, 36 and 37 call `pack()`,
+`voxelize()`, `generate_grains()` and `plot_grains()`. The comment describing a
+hull around voxelized grains is stale. Current `generate_grains()` reuses the APD
+or builds one from packed ellipsoids, then constructs a tetrahedral background,
+the APD partition, shared boundaries and surface triangles. Voxelization is
+optional; the surface is not generated from edited voxel labels. The background
+tetrahedra are construction scaffolding, not the final FE mesh.
+
+The manual voxel figures illustrate how an edit to one grain can harm a
+neighbour. They do not demonstrate a repair of the APD surface. A future repair
+must modify a coherent continuous partition and retain a single shared interface
+between neighbouring grains; the reliable algorithm remains to be developed.
+
+The slides use twelve distinct PNG figures across thirteen panels. The ellipsoid and voxel figures were
+restored from Git for the first slide. Four unused figures and three title page
+images remain deleted, with no new backups. The slide overview, two footer logos,
+generation script, parameters, geometry data and caches are retained. The cleanup
+does not regenerate or alter the geometry.
 
 ## Build
 
-From this directory, run:
+From this directory, with LaTeX, `latexmk` and `make` installed, run:
 
 ```bash
 make
 ```
 
-This compiles `talk.tex` and removes the intermediate LaTeX files. The PDF stays
-in this directory. To compile while retaining the log for inspection, run:
+This compiles `talk.tex` and removes intermediate LaTeX files. To keep the build
+log for inspection, run:
 
 ```bash
 latexmk -pdf -interaction=nonstopmode -halt-on-error talk.tex
 ```
 
+The theme files and the two footer logos in `logos/` must stay with the source.
+Reading the saved PDF does not require LaTeX or Python.
+
+## Figure sources
+
+Each figure caption names the Kanapy functions used to generate its geometry or
+plot it. Functions marked `Report` belong to `generate_figures.py`, except
+`mesh_demo()`, which belongs to the independent `mesh_demo.py` script.
+
+| Figures used | Geometry and rendering |
+| --- | --- |
+| `pipeline_ellipsoids.png`, `pipeline_voxels.png` | RVE generated with Kanapy using `ms.pack()` and `ms.voxelize()`; rendered by Kanapy's `plot_ellipsoids_3D()` and `plot_voxels_3D()`. |
+| `normal_junction.png`, `pinch_surface.png` | Controlled test geometry generated with Kanapy; presentation styling added by the figure script. |
+| `link_regular.png`, `link_pinch.png` | Input geometry generated by Kanapy's `build_grain_geometry()`; links extracted by `vertex_link()` and drawn by `link_figure()` in the figure script. |
+| `local_band.png`, `local_before.png`, `local_greedy.png`, `local_joint.png` | Manually constructed voxel labels and candidate edits; Kanapy voxel rendering and boundary checks. |
+| `pipeline_surface.png` | RVE surface triangles generated by Kanapy's `ms.generate_grains(resolution=6)`; rendered with Matplotlib by the figure script. Used on slides 1 and 6. |
+| `pipeline_volume_mesh.png` | Generic cube tetrahedral mesh illustration generated and drawn by `mesh_demo()` in `mesh_demo.py`. Not Kanapy output or an FE mesh of the RVE in the preceding three panels. |
+
+The analytical pinch follows `tests/test_power_diagram_diagnostics.py`; the normal
+junction follows `tests/test_apd_boundary.py`. The figure labels distinguish
+Kanapy geometry from manually constructed examples. None shows the professor's
+unavailable failing RVE.
+
 ## Reproduce the figures
 
-Use the repository's configured Python environment:
+Use the repository's configured Python environment. If needed, create and install
+it from the repository root:
 
 ```bash
-/home/users/xuejungs/anaconda3/envs/knpy/bin/python generate_figures.py
+conda env create -f environment.yml
+conda activate knpy
+python -m pip install .
 ```
 
-The script imports Kanapy from the repository's `src` directory, then saves
-the PNGs here. It also supports `--only controls`, `--only local`,
-`--only context` and `--only periodic`. It creates no figure or data directories.
-Required packages are the normal Kanapy dependencies and Matplotlib.
+With the environment active, run from the repository root:
+
+```bash
+python ICAMSbeamer/generate_figures.py
+python ICAMSbeamer/mesh_demo.py
+```
+
+The script imports Kanapy from this repository's `src` directory and saves the
+PNGs in `ICAMSbeamer`. It supports `--only controls`, `--only local`,
+`--only context` and `--only periodic`. For example, `--only context` redraws only
+the existing RVE figure group. The script still generates the original figure
+groups, including images removed from this short presentation. Normal Kanapy
+dependencies and Matplotlib are required. No figure or data subdirectories are
+created.
+
+The independent `mesh_demo.py` script creates the fourth panel on slide 1.
+`pipeline_volume_mesh.json` records its generic cube mesh and display cutaway
+and element shrink settings. The panel is labelled `Bulk mesh (next)` and identifies an illustration;
+it demonstrates internal tetrahedra, not a completed RVE repair or a required
+choice of bulk element type. No figure shows the result of `smoothen()`.
 
 `figure_provenance.json` records the source version, parameters and measurements.
-`context_apd.npz` contains the frozen contextual APD and voxel labels.
-`context_descriptor.json` and `context_generation.json` record its input and
+`context_apd.npz` contains the frozen example APD and voxel labels.
+`context_descriptor.json` and `context_generation.json` record its inputs and
 generation settings. `local_before.npy`, `local_greedy.npy` and `local_joint.npy`
-contain the constructed voxel candidates. `context_rve_low_fill.pkl` caches
-the packed RVE so redrawing does not repeat packing; deleting it makes the
-script regenerate that example with the fixed seed.
+contain the constructed voxel candidates.
+
+`context_rve_low_fill.pkl` caches the packed RVE so redrawing does not repeat
+packing. If a different environment cannot read the cache, move it aside as a
+backup before regenerating with `--only context`. Dependency changes may affect
+recomputed results; retain the saved PNGs and PDF to preserve this presentation.
 
 ## Evidence and limits
 
-The figures use Kanapy 6.5.5 from repository commit
-`19713e5612fdaaea2acc4378b2c897be3f54dd2d`. The contextual RVE has 23 grains in
-a 24 micrometre box; packing relaxation reached zero remaining overlap contacts.
-The controlled APD figures reproduce the existing analytical pinch regression.
+The original figures use Kanapy 6.5.5 from repository commit
+`19713e5612fdaaea2acc4378b2c897be3f54dd2d`. The example RVE has 23 grains in a
+24 micrometre box, nonperiodic boundaries and random seed `20261001`. Packing
+relaxation reached zero remaining overlap contacts. Its shared surface contains
+7554 triangles. The surface and saved voxel labels represent the same APD;
+the surface is not a smoothed voxel boundary or a final FE volume mesh.
 
 In the constructed voxel example, connecting A alone disconnects B. The joint
-candidate changes ten of 1331 cells, leaves all three grains face connected and
-passes Kanapy's local voxel boundary checks. The figure script asserts these
-results and the regular/pinched vertex-link counts.
+candidate changes ten of 1331 cells, leaves all three grains connected through
+shared faces and passes Kanapy's local voxel boundary checks. Grain volumes
+change by +4.69%, +4.44% and -0.69% for A, B and C. These are measurements, not
+accepted physical tolerances. The script asserts the connectivity, boundary
+checks and regular versus pinched vertex link counts.
 
-This is a research proposal. The joint candidate was constructed manually;
-the automatic search, continuous-partition repair, periodic repair, FE volume
-meshing and mechanical validation remain proposed work. No figure is presented
-as Hartmaier's unavailable failing specimen.
-
-The complete PDF was compiled, rendered and checked for layout and page bounds.
-PNG files were decoded to verify their integrity. The slides retain ordinary
-multi-grain junctions and distinguish volume connectivity, local boundary
-topology and geometric validity.
+The candidate edits were specified manually. Changing these voxel labels does
+not change the APD used by `generate_grains()`. A complete per-grain vertex check,
+automatic candidate search, continuous partition repair, periodic repair and bulk
+meshing from the repaired surface remain proposed work. The first deliverable is
+a prototype for interior defects with saved geometry and a check report; periodic
+cases follow later. Surface triangle quality and bulk meshing are the immediate
+validation goals. Mechanical validation is a possible later extension. Current
+Gmsh integration generates surface triangles. No figure demonstrates a completed
+repair of the professor's case.

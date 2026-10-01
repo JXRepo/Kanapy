@@ -69,8 +69,6 @@
 % multiple times in the output file.
 \pgfdeclareimage[height=0.5cm]{institute-logo_sml}{logos/ICAMS_noclaim.png}
 \pgfdeclareimage[height=0.5cm]{university-logo_sml}{logos/RUB_noclaim.png}
-\pgfdeclareimage[height=1.3cm]{institute-logo}{logos/ICAMS.png}
-\pgfdeclareimage[height=0.7cm]{university-logo}{logos/RUB.png}
 % The dots at the bottom are generated using TikZ and saved in a box.
 % Otherwise, it would be generated multiple times. That would take
 % quite some time to compile.
@@ -127,67 +125,6 @@
 % disable navigation symbols
 \beamertemplatenavigationsymbolsempty
 
-% Taken from beamerinnerthemedefault.sty
-\newlength{\icams@titleboxheight}
-\xifaspectratio{
-  {43}{\setlength{\icams@titleboxheight}{6.2cm}}
-  {169}{\setlength{\icams@titleboxheight}{5.6cm}}
-}[\setlength{\icams@titleboxheight}{6.2cm}\typeout{WARNING aspect ratio not supported by beamer theme!}]
-\newcommand\icams@boxsep{5pt}
-\setbeamertemplate{title page}
-{
-  \vspace*{-\Gm@tmargin}%
-  \vspace*{-6pt}%
-  \makebox[\textwidth][l]{%
-    \hspace*{-\Gm@lmargin}%
-    \includegraphics[width=\paperwidth]{logos/banner.png}%
-  }
-  \begingroup
-  \centering%
-  \begin{beamercolorbox}[wd=\paperwidth,sep=0pt,center]{title page}
-    \begin{minipage}[c][\icams@titleboxheight][c]{\textwidth}
-      \begin{beamercolorbox}[sep=\icams@boxsep,center]{title}
-        \vfill
-        \usebeamerfont{title}\inserttitle\par%
-        \ifx\insertsubtitle\@empty%
-        \else%
-        \vskip0.25em%
-        {\usebeamerfont{subtitle}\usebeamercolor[fg]{subtitle}\insertsubtitle\par}%
-        \fi%
-      \end{beamercolorbox}%
-      \vskip0.8em\par
-      \begin{beamercolorbox}[sep=\icams@boxsep,center]{author}
-        \usebeamerfont{author}\insertauthor
-      \end{beamercolorbox}
-      \begin{beamercolorbox}[sep=\icams@boxsep,center]{institute}
-        \usebeamerfont{institute}\insertinstitute
-      \end{beamercolorbox}
-      \begin{beamercolorbox}[sep=\icams@boxsep,center]{date}
-        \usebeamerfont{date}\insertdate
-      \end{beamercolorbox}%\vskip0.5em
-    \end{minipage}%
-  \end{beamercolorbox}%
-  \endgroup
-  \vfill%
-  \makebox[\textwidth][l]{\hspace*{-\Gm@lmargin}%
-    \parbox{\paperwidth}{%
-      \hfill%
-      \raisebox{-0.5\height}{\pgfuseimage{institute-logo}}%
-      \hfill%
-      \hfill%
-      \raisebox{-0.5\height}{\pgfuseimage{university-logo}}%
-      \hfill\null%
-    }%
-  }%
-}
-% Create a convenience command to print title page. A few options
-% are required to get the proper look. This way they don't have to
-% be remembered.
-\newcommand\icamstitlepage{%
-  \begin{frame}[t,plain,noframenumbering]
-    \titlepage
-  \end{frame}%
-}
 \newcommand\icamsexamplepage{%
   \begin{frame}{This Frame Does Have a Title}
     \framesubtitle{And a not Very Short Subtitle}
