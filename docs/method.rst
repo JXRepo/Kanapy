@@ -269,8 +269,8 @@ Result objects and optional files
 :func:`kanapy.graph_workflow.build_ebsd_graph` returns an
 :class:`kanapy.graph_workflow.EBSDGraphResult` instance. Reconstruction
 settings are supplied through :class:`kanapy.graph_workflow.EBSDGraphConfig`.
-From the repository root, start Python with ``PYTHONPATH=src`` to use the
-checkout's implementation:
+For development, install the checkout with ``python -m pip install -e .``
+from the repository root before starting Python:
 
 .. code-block:: python
 
@@ -339,30 +339,54 @@ Example workflows
 The examples keep experiment parameters and output choices in the scripts.
 
 ``examples/EBSD_analysis/graph_based_analysis.py``
-    Builds the graphs without extracting grain statistics or generating an
-    RVE. It explicitly enables four files in its ``2D_graph_result`` directory:
-    ``ebsd_graph.pkl``, ``ebsd_graph_summary.json``, ``graph_overlay.png``,
-    and ``graph_ipf_map.png``. Step figures are disabled. The example recreates
-    its result directory on each run.
+    Runs complete two dimensional EBSD analysis without generating an RVE.
+    Graph files remain available in its ``2D_graph_result`` directory:
+    ``ebsd_graph.pkl``, ``ebsd_graph_summary.json``, ``00_graph_overlay.png``,
+    and ``graph_ipf_map.png``. ``statistics.json`` adds equivalent diameters,
+    aspect ratios, tilt angles, fitted parameters, and units. Its top level
+    statistics describe the selected phase; for multiple retained phases,
+    a ``phases`` list includes each phase's separate statistics. Histograms,
+    misorientation and IPF maps, segmentation images, pole figures, and IPF
+    projections are saved automatically. With multiple retained phases,
+    histogram filenames include the original phase ID. Statistics and plotting use Kanapy's
+    existing methods. Output switches are defined at the top of the script;
+    diagnostic step figures remain disabled by default. The example recreates
+    its result directory on each run and returns the complete result object.
+    The graph image sorts first by filename and is the first interactive
+    preview when ``show_figures=True``.
 
 ``examples/EBSD_to_RVE/graph_to_rve.py``
-    Requests complete statistics and passes the result and EBSD instance into
-    the Kanapy RVE workflow: descriptor construction, initialization, packing,
-    voxelization, orientation generation, and voxel export. Figures are saved
+    Runs the complete workflow from EBSD input, graph reconstruction, and
+    grain statistics through descriptor construction, RVE initialization,
+    packing, voxelization, orientation generation, and voxel export. Result
+    and EBSD instances are passed directly between stages. Figures are saved
     and closed automatically in the script's ``outputs`` directory. Matching
     filenames are overwritten, unrelated files remain, and ``manifest.json``
     lists the current run's outputs. ``--show`` enables interactive previews;
     ``--extra-outputs`` enables additional polyhedral and Abaqus exports.
+    The graph overlay is saved and optionally displayed before the histograms
+    and remaining EBSD figures.
 
-Both examples default to four pixel neighbors, a 10 pixel small grain
-threshold, and a 3% phase fraction threshold. They use the source code from
-the checkout when available. Run them from the repository root:
+``examples/EBSD_to_RVE/convert_ang2rve.py``
+    Preserves the original Kanapy example's complete EBSD to RVE computation
+    sequence, with updated comments and paths relative to the script. Its
+    plots remain interactive, with the grain graph displayed first: close each
+    window to continue. The single voxel JSON is written directly beside the
+    script in ``EBSD_to_RVE``, for example ``Iron fcc_voxels.json``. This example
+    retains its selection of the first phase in ``ebsd.ms_data`` for the RVE
+    statistics. The graph example's files remain in its ``outputs`` directory.
+
+The two graph examples default to four pixel neighbors, a 10 pixel small
+grain threshold, and a 3% phase fraction threshold. All three examples use
+the currently installed Kanapy implementation. Run them from the repository root:
 
 .. code-block:: console
 
     python examples/EBSD_analysis/graph_based_analysis.py
     python examples/EBSD_to_RVE/graph_to_rve.py
+    python examples/EBSD_to_RVE/convert_ang2rve.py
 
-Multiphase EBSD analysis and combined plotting do not change the RVE example's
-phase selection: it generates an RVE for the retained phase with the largest
-fraction. It does not construct a multiphase RVE from all measured phases.
+Multiphase EBSD analysis and combined plotting do not change
+``graph_to_rve.py`` phase selection: it generates an RVE for the retained
+phase with the largest fraction. It does not construct a multiphase RVE from
+all measured phases.

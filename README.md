@@ -105,19 +105,23 @@ Kanapy comes with several examples in form of Python scripts and Juypter noteboo
 
 Kanapy notebooks can also be used on [Binder](https://mybinder.org/v2/gh/ICAMS/Kanapy.git/HEAD?urlpath=%2Fdoc%2Ftree%2Findex.ipynb).
 
-Two scripts provide the EBSD graph workflow:
+The examples provide standalone EBSD analysis and two complete EBSD to RVE workflows:
 
-- [`graph_based_analysis.py`](examples/EBSD_analysis/graph_based_analysis.py) builds grain graphs without generating an RVE. Its output switches enable a graph pickle, a JSON summary, an IPF image, and a graph overlay in `examples/EBSD_analysis/2D_graph_result/`.
-- [`graph_to_rve.py`](examples/EBSD_to_RVE/graph_to_rve.py) continues from the graph through grain statistics and the Kanapy RVE workflow. It saves figures and results in `examples/EBSD_to_RVE/outputs/`. Experiment parameters are listed at the top of the script; `--help` lists command line overrides, including `--show` for interactive previews and `--extra-outputs` for additional exports.
+- [`graph_based_analysis.py`](examples/EBSD_analysis/graph_based_analysis.py) runs complete two dimensional EBSD analysis: grain graphs, equivalent diameters, aspect ratios, tilt angles, fitted distributions, and EBSD plots. It saves graph files, `statistics.json`, histograms, maps, and pole figures in `examples/EBSD_analysis/2D_graph_result/`. Every retained phase has separate statistics. File output switches are listed at the top of the script, and no RVE is generated.
+- [`graph_to_rve.py`](examples/EBSD_to_RVE/graph_to_rve.py) runs the complete workflow from EBSD reading and graph reconstruction through statistics, RVE initialization, packing, voxelization, orientation assignment, and export. It saves figures and results in `examples/EBSD_to_RVE/outputs/`. Experiment parameters are listed at the top of the script; `--help` lists command line overrides, including `--show` for interactive previews and `--extra-outputs` for additional exports.
+- [`convert_ang2rve.py`](examples/EBSD_to_RVE/convert_ang2rve.py) retains the original Kanapy example's complete EBSD to RVE computation sequence and interactive plots. Close each figure to continue. Its single voxel JSON is saved directly in `examples/EBSD_to_RVE/`, for example `Iron fcc_voxels.json`.
 
-Run either example from the repository root:
+The grain graph is the first displayed figure in all three examples. The two graph examples also save it before the other figures: `00_graph_overlay.png` in the standalone analysis and `ebsd_graph_overlay_01.png` in the complete workflow. These names sort before the other generated PNG files.
+
+Run an example from the repository root:
 
 ```console
 python examples/EBSD_analysis/graph_based_analysis.py
 python examples/EBSD_to_RVE/graph_to_rve.py
+python examples/EBSD_to_RVE/convert_ang2rve.py
 ```
 
-Both examples use the source code in this checkout when available. They default to four neighboring pixels, a minimum grain size of 10 pixels, and a minimum phase pixel fraction of 3%. Multiple retained phases appear together in the image outputs, with graph nodes and edges colored by phase. Graph exports preserve each retained phase, and grain merges are restricted to the same phase. The RVE example currently generates an RVE for the majority phase.
+All three examples use Kanapy installed in the active environment. For development, run `python -m pip install -e .` from the repository root to use this checkout. The two graph examples default to four neighboring pixels, a minimum grain size of 10 pixels, and a minimum phase pixel fraction of 3%. Multiple retained phases appear together in the image outputs, with graph nodes and edges colored by phase. Graph exports preserve each retained phase, and grain merges are restricted to the same phase. `graph_to_rve.py` generates an RVE for the majority phase; the original `convert_ang2rve.py` selects the first retained phase.
 
 
 ## Documentation

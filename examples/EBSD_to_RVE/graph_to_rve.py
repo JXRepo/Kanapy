@@ -1,10 +1,14 @@
 """
 Generate an RVE from EBSD data using graph based grain reconstruction.
 
-Edit the parameter block below, then run `python graph_to_rve.py` in the knpy
-environment. The workflow follows convert_ang2rve.py and uses the local Kanapy
-sources. Input and default output paths resolve from this file.
+This complete workflow includes EBSD analysis and grain statistics, followed
+by RVE initialization, packing, voxelization, orientation assignment, and export.
 
+Edit the parameter block below, then run `python graph_to_rve.py` in the knpy
+environment. The workflow follows convert_ang2rve.py and uses Kanapy installed
+in that environment. Input and default output paths resolve from this file.
+
+The grain graph is the first figure, both when saved and when previewed.
 Figures are saved and closed automatically. Matching filenames are overwritten;
 unrelated files remain in the output folder. The manifest lists this run's files.
 Command line options such as --output-dir, --min-size and --show override the
@@ -13,24 +17,26 @@ corresponding defaults below. Run with --help for the available options.
 The optional extra outputs include polyhedral figures and Abaqus files.
 With multiple retained phases, the EBSD IPF and graph figures show them together.
 RVE generation continues to use the retained phase with the largest fraction.
+
+Author: Jun Xue
+ICAMS, Ruhr University Bochum, Germany
+
+October 2026
 """
 
 import argparse
 from pathlib import Path
 import random
 import shutil
-import sys
-
-BASE_DIR = Path(__file__).resolve().parent
-REPO_DIR = BASE_DIR.parents[1]
-if (REPO_DIR / "src").exists():
-    sys.path.insert(0, str(REPO_DIR / "src"))
 
 import kanapy as knpy
 from kanapy.core.plotting import capture_figures
 import matplotlib.pyplot as plt
 import numpy as np
 from orix.quaternion import Orientation
+
+BASE_DIR = Path(__file__).resolve().parent
+REPO_DIR = BASE_DIR.parents[1]
 
 # input and RVE settings
 fname = REPO_DIR / "examples/fixtures/ebsd_316L_500x500.ang"
@@ -120,6 +126,8 @@ def run_workflow(args):
     selected_index = result.selected_phase_position
     print(f"Selected EBSD phase #{phase['index']} ({phase['name']}), {phase['ngrains']} grains")
 
+    with capture_figures(output, "ebsd_graph_overlay", files, args.show):
+        ebsd.plot_graph_overlay(iphase=None)
     with capture_figures(output, "ebsd_histograms", files, args.show):
         ebsd.plot_histograms(iphase=selected_index)
     for stage, plot in [
@@ -133,9 +141,6 @@ def run_workflow(args):
         ebsd.plot_pf()
     with capture_figures(output, "ebsd_ipf_projection", files, args.show):
         ebsd.plot_pf_proj()
-    with capture_figures(output, "ebsd_graph_overlay", files, args.show):
-        ebsd.plot_graph_overlay(iphase=None)
-
     descriptor = knpy.set_stats(
         phase["gs_param"], phase["ar_param"], phase["om_param"],
         deq_min=deq_min, deq_max=deq_max, asp_min=asp_min, asp_max=asp_max,
