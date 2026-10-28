@@ -71,12 +71,13 @@ def main():
     graph_config = knpy.EBSDGraphConfig(
         min_phase_pixel_fraction=0.03,
         max_misorientation_degrees=5.0,
-        min_grain_size_pixels=20.0,
+        min_grain_size_pixels=10.0,
         connectivity=4,
         boundary_artifact_size_factor=2.0,
         boundary_artifact_fraction_min=0.85,
         convex_hull_min_points=3,
         similar_orientation_merge_degrees=5.0,
+        hex_grid_target_spacing=None,
     )
     output_options = knpy.EBSDGraphOutputOptions(
         output_dir=output_dir,

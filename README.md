@@ -25,6 +25,7 @@ basic implementation of Kanapy is done in form of a Python Appplication Programm
 
 -   Kanapy offers a Python Application Programming Interface (API).
 -   Possibility to analyze experimental microstructures based on [orix](https://orix.readthedocs.io/en/stable/#) functions.
+-   Reusable EBSD grain graphs with phase labels, combined phase overlays, and optional data exports.
 -   Support of multiphase microstructures.
 -   Generation of 3D microstructure morphology based on statistical features as size distributions and aspect ratio distributions of grains and phase regions.
 -   Crystallographic texture reconstruction using orientations from experimental data in form of Orientation Distribution Function (ODF).
@@ -103,6 +104,20 @@ Kanapy comes with several examples in form of Python scripts and Juypter noteboo
 ```
 
 Kanapy notebooks can also be used on [Binder](https://mybinder.org/v2/gh/ICAMS/Kanapy.git/HEAD?urlpath=%2Fdoc%2Ftree%2Findex.ipynb).
+
+Two scripts provide the EBSD graph workflow:
+
+- [`graph_based_analysis.py`](examples/EBSD_analysis/graph_based_analysis.py) builds grain graphs without generating an RVE. Its output switches enable a graph pickle, a JSON summary, an IPF image, and a graph overlay in `examples/EBSD_analysis/2D_graph_result/`.
+- [`graph_to_rve.py`](examples/EBSD_to_RVE/graph_to_rve.py) continues from the graph through grain statistics and the Kanapy RVE workflow. It saves figures and results in `examples/EBSD_to_RVE/outputs/`. Experiment parameters are listed at the top of the script; `--help` lists command line overrides, including `--show` for interactive previews and `--extra-outputs` for additional exports.
+
+Run either example from the repository root:
+
+```console
+python examples/EBSD_analysis/graph_based_analysis.py
+python examples/EBSD_to_RVE/graph_to_rve.py
+```
+
+Both examples use the source code in this checkout when available. They default to four neighboring pixels, a minimum grain size of 10 pixels, and a minimum phase pixel fraction of 3%. Multiple retained phases appear together in the image outputs, with graph nodes and edges colored by phase. Graph exports preserve each retained phase, and grain merges are restricted to the same phase. The RVE example currently generates an RVE for the majority phase.
 
 
 ## Documentation

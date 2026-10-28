@@ -12,7 +12,10 @@ import networkx as nx
 import json
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.lines import Line2D
 from kanapy.core import get_grain_geom
+from kanapy.ebsd_io import EBSDDataLoader, LoadedEBSDData
+from kanapy.ebsd_hex_grid import resample_ebsd_to_rect_grid
 from scipy.stats import lognorm, vonmises
 from scipy.spatial import ConvexHull, KDTree
 from scipy.special import legendre, beta
@@ -68,6 +71,9 @@ DEFAULT_BOUNDARY_ARTIFACT_FRACTION_MIN = 0.85
 """
 Default minimum boundary pixel fraction for artifact candidates.
 """
+
+CONFIDENCE_INDEX_THRESHOLD = 0.1
+BAD_PIXEL_MAX_ITERATIONS_MULTIPLIER = 2
 
 CONVEX_HULL_MIN_POINTS = 3
 """
@@ -306,9 +312,34 @@ def _batch_misorientation_angle(q_a, q_b, sym_ops):
     return 2.0 * np.arccos(max_abs_w)
 
 
+def _same_phase(G, node1, node2):
+    """
+    Check whether two grain nodes belong to the same phase.
+
+    Legacy graphs without phase attributes remain usable when both nodes
+    lack the attribute. A tagged node cannot merge with an untagged node.
+
+    Parameters
+    ----------
+    G : networkx.Graph
+        Graph containing the grain nodes.
+    node1, node2 : int
+        Grain identifiers to compare.
+
+    Returns
+    -------
+    bool
+        Whether both phase identifiers match.
+    """
+    return G.nodes[node1].get("phase_id") == G.nodes[node2].get("phase_id")
+
+
 def _compute_all_edge_misorientations(G, sym_ops):
     """
-    Compute and cache misorientation values for every graph edge.
+    Compute and cache misorientation values for edges within the same phase.
+
+    Cross phase edges have no comparable angle under the graph's symmetry.
+    Any old angle on those edges is removed before merge selection.
 
     Parameters
     ----------
@@ -317,7 +348,12 @@ def _compute_all_edge_misorientations(G, sym_ops):
     sym_ops : numpy.ndarray
         Proper symmetry operators used for misorientation reduction.
     """
-    edges = list(G.edges())
+    edges = []
+    for node_a, node_b in G.edges():
+        if _same_phase(G, node_a, node_b):
+            edges.append((node_a, node_b))
+        else:
+            G[node_a][node_b].pop("misorientation", None)
     if not edges:
         return
 
@@ -345,7 +381,12 @@ def _refresh_node_misorientation_cache(G, node, sym_ops=None):
         Proper symmetry operators. If omitted, they are built from graph
         symmetry metadata.
     """
-    neighbors_sorted = sorted(G.adj[node])
+    neighbors_sorted = []
+    for neighbor in sorted(G.adj[node]):
+        if _same_phase(G, node, neighbor):
+            neighbors_sorted.append(neighbor)
+        else:
+            G[node][neighbor].pop("misorientation", None)
     if not neighbors_sorted:
         return
 
@@ -360,119 +401,171 @@ def _refresh_node_misorientation_cache(G, node, sym_ops=None):
         G[node][neigh]["misorientation"] = float(angle)
 
 
-def merge_nodes(G: nx.Graph, node1: Any, node2: Any, preserve_target_orientation: bool = False) -> None:
+def merge_nodes(
+    G: nx.Graph,
+    node1: int,
+    node2: int,
+    preserve_target_orientation: bool = False,
+) -> None:
     """
-    Merge the pixel and attribute data of one node into another node.
+    Merge two grain nodes in the microstructure graph.
 
-    The function keeps node2, removes node1, and updates the pixel list,
-    average orientation, size, convex hull, edges, and label map.
+    The graph cleanup pipeline uses this operation whenever one grain should be
+    absorbed into a neighboring grain while keeping pixels, orientations, edges,
+    and the label map consistent.
+
+    Combines grain `node1` into grain `node2`, then removes `node1` from
+    the graph. This operation updates pixel assignments, recomputes the
+    average orientation, recalculates the convex hull, transfers all adjacency
+    edges, and updates the label map.
 
     Parameters
     ----------
-    G : networkx.Graph
-        Graph whose nodes store ``pixels``, ``ori_av`` and ``npix``. The graph
-        stores ``label_map``, ``dx`` and ``dy``. If ``rotations`` and
-        ``symmetry`` are available, the merged average orientation is recomputed
-        from the original pixel orientations.
+    G : nx.Graph
+        Microstructure graph with grain nodes. Must contain:
+        - Node attributes: 'pixels', 'npix', 'ori_av', optionally 'hull'
+        - Graph attributes: 'label_map', 'dx', 'dy'. If 'rotations' and
+          'symmetry' are available, the merged average orientation is
+          recomputed from the original pixel orientations.
     node1 : int
-        Node ID to be merged and removed.
+        Grain ID to be merged (will be removed)
     node2 : int
-        Node ID to merge into and retain.
+        Grain ID to merge into (will be updated and retained)
     preserve_target_orientation : bool, optional
         Keep the retained node orientation unchanged. Cleanup passes use this
-        when a small geometric artifact should not affect the larger node.
+        when an absorbed small region should not affect the crystallographic
+        representative orientation of the larger node.
+
+    Raises
+    ------
+    ValueError
+        If the nodes have different phases or both have zero pixels.
+
+    Algorithm
+    ---------
+    1. Concatenate pixel lists from both grains
+    2. Recompute the average orientation unless target orientation is preserved
+    3. Recompute convex hull for merged grain (if sufficient points)
+    4. Transfer all edges from node1's neighbors to node2
+    5. Remove node1 from graph
+    6. Update label_map to remap node1 pixels to node2
 
     Notes
     -----
     This function modifies the graph in place.
+
+    The convex hull is only recomputed if the merged grain has at least
+    CONVEX_HULL_MIN_POINTS (typically 3) pixels. Otherwise, the hull
+    attribute is removed. The explicit Kanapy convention uses scaled rows and
+    columns. Existing handoffs with origins and no such marker retain their
+    physical x and y coordinates.
     """
+    if not _same_phase(G, node1, node2):
+        raise ValueError("Cannot merge grains from different phases.")
+
     has_misorientation_cache = any(
-        "misorientation" in data
-        for _node_a, _node_b, data in G.edges([node1, node2], data=True)
+        "misorientation" in data for _u, _v, data in G.edges([node1, node2], data=True)
     )
 
-    # merge pixel lists before recomputing node attributes
-    G.nodes[node2]['pixels'] = np.concatenate((G.nodes[node1]['pixels'], G.nodes[node2]['pixels']))
-    npix1 = G.nodes[node1]['npix']
-    npix2 = G.nodes[node2]['npix']
-    ntot = npix1 + npix2
+    p1 = G.nodes[node1]["pixels"]
+    p2 = G.nodes[node2]["pixels"]
+    merged_pixels = np.concatenate((p1, p2))
+    G.nodes[node2]["pixels"] = merged_pixels
 
-    if not preserve_target_orientation and 'rotations' in G.graph:
-        pix = G.nodes[node2]['pixels']
-        G.nodes[node2]['ori_av'] = mean_orientation_data(
-            G.graph['rotations'][pix],
-            G.graph['symmetry'],
-        )
-    elif not preserve_target_orientation:
-        # keep old graph objects usable when original pixel orientations are missing
-        ori_av = (G.nodes[node1]['ori_av'] * G.nodes[node1]['npix'] +
-                  G.nodes[node2]['ori_av'] * G.nodes[node2]['npix']) / ntot
-        G.nodes[node2]['ori_av'] = ori_av / np.linalg.norm(ori_av)
+    n1 = int(G.nodes[node1]["npix"])
+    n2 = int(G.nodes[node2]["npix"])
+    ntot = n1 + n2
+    if ntot == 0:
+        raise ValueError("Both nodes have zero pixels")
 
-    G.nodes[node2]['npix'] = ntot
-    if 'hull' in G.nodes[node2].keys():
-        # update hull if it exists already
-        sh = G.graph['label_map'].shape
-        pts = np.array(np.unravel_index(G.nodes[node2]['pixels'], sh), dtype=float).T
-        # convert pixel distances to micron
-        pts[:, 0] *= G.graph['dx']
-        pts[:, 1] *= G.graph['dy']
-        if pts.shape[0] >= CONVEX_HULL_MIN_POINTS:
-            G.nodes[node2]['hull'] = ConvexHull(pts)
+    if not preserve_target_orientation:
+        if "rotations" in G.graph and "symmetry" in G.graph:
+            G.nodes[node2]["ori_av"] = mean_orientation_data(
+                G.graph["rotations"][merged_pixels],
+                G.graph["symmetry"],
+            )
         else:
-            G.nodes[node2].pop('hull', None)
+            # keep old graph objects usable when original pixel orientations are missing
+            ori1 = np.asarray(G.nodes[node1]["ori_av"], dtype=np.float64)
+            ori2 = np.asarray(G.nodes[node2]["ori_av"], dtype=np.float64)
+            ori_av = (ori1 * n1 + ori2 * n2) / ntot
+            G.nodes[node2]["ori_av"] = ori_av / np.linalg.norm(ori_av)
 
-    # add new edges and let the graph ignore existing ones
+    G.nodes[node2]["npix"] = ntot
+
+    if "hull" in G.nodes[node2]:
+        sh = G.graph["label_map"].shape
+        rows, columns = np.unravel_index(G.nodes[node2]["pixels"], sh)
+        if G.graph.get("geometry_convention") != "kanapy_row_column" and (
+                "origin_x" in G.graph or "origin_y" in G.graph):
+            origin_x = float(G.graph.get("origin_x", 0.0))
+            origin_y = float(G.graph.get("origin_y", 0.0))
+            x = origin_x + columns * float(G.graph["dx"])
+            y = origin_y + rows * float(G.graph["dy"])
+            pts = np.column_stack((x, y))
+        else:
+            pts = np.column_stack((rows * G.graph["dx"], columns * G.graph["dy"]))
+        if pts.shape[0] >= CONVEX_HULL_MIN_POINTS:
+            G.nodes[node2]["hull"] = ConvexHull(pts)
+        else:
+            G.nodes[node2].pop("hull", None)
+
     for neigh in sorted(G.adj[node1]):
-        if node2 != neigh:
+        if neigh != node2:
             G.add_edge(node2, neigh)
 
+    # remove node1 from graph and update label_map
     G.remove_node(node1)
-
-    # replace node1 labels with node2 labels
-    ix, iy = np.nonzero(G.graph['label_map'] == node1)
-    G.graph['label_map'][ix, iy] = node2
+    ix, iy = np.nonzero(G.graph["label_map"] == node1)
+    G.graph["label_map"][ix, iy] = node2
 
     if has_misorientation_cache:
         _refresh_node_misorientation_cache(G, node2)
 
 
-def find_largest_neighbor(G: nx.Graph, node: Any) -> Any:
+def find_largest_neighbor(G: nx.Graph, node: int) -> int:
     """
-    Find the largest neighboring node of a given node in a graph
+    Find the neighboring grain with the most pixels.
 
-    This function iterates over all neighbors of the specified node and returns
-    the neighbor with the largest 'npix' (number of pixels).
+    Small or geometrically invalid grains are merged into this neighbor during
+    graph cleanup, using the lowest node id as a deterministic tie breaker.
+
+    Searches grains of the same phase adjacent to the given node and returns the ID
+    of the neighbor with the highest pixel count. This is commonly used
+    when merging small grains into a larger neighboring grain.
 
     Parameters
     ----------
-    G : networkx.Graph
-        Graph object where nodes have an attribute 'npix' representing their size.
+    G : nx.Graph
+        Microstructure graph with grain nodes
     node : int
-        Node ID for which the largest neighbor is to be found.
+        Grain ID whose largest neighbor should be found
 
     Returns
     -------
     int
-        Node ID of the largest neighbor.
+        Grain ID of the largest neighboring grain
 
-    Notes
-    -----
-    - Raises a ValueError if the node has no neighbors.
-    - Raises a ValueError if the graph contains circular edges (neighbor is the node itself).
-    - Does not modify the graph.
+    Raises
+    ------
+    ValueError
+        If the grain has no neighbors (isolated grain)
+    ValueError
+        If the graph has a self loop (corrupted graph structure)
     """
-    # find the largest neighbor of given grain
-    size_ln = 0  # size of largest neighbor grain
-    num_ln = -1  # ID of largest neighbor grain
-    for neigh in G.adj[node]:
-        if G.nodes[neigh]['npix'] > size_ln:
-            size_ln = G.nodes[neigh]['npix']
-            num_ln = neigh  # number of largest neighbor grain
-    if num_ln < 0:
-        raise ValueError(f'Grain {node} has no neighbors.')
+    neighbor_rows = []
+    for neigh in sorted(G.adj[node]):
+        if not _same_phase(G, node, neigh):
+            continue
+        neighbor_rows.append((int(G.nodes[neigh]["npix"]), int(neigh)))
+
+    if not neighbor_rows:
+        raise ValueError(f"Grain {node} has no neighbors in the same phase.")
+
+    _size_ln, num_ln = max(neighbor_rows, key=lambda row: (row[0], -row[1]))
     if num_ln == node:
-        raise ValueError(f'Corrupted graph with circular edges: {node, num_ln}.')
+        raise ValueError(f"Corrupted graph with circular edges: {node, num_ln}.")
+
     return num_ln
 
 
@@ -481,7 +574,7 @@ def find_sim_neighbor(G: nx.Graph, nn: Any, sym_ops: Any = None) -> Any:
     Find the neighboring node most similar in orientation to the given node.
 
     This function computes the misorientation angles between the given node and
-    all its neighbors, or reads cached edge values when they are available.
+    its neighbors in the same phase, or reads cached edge values when available.
 
     Parameters
     ----------
@@ -506,9 +599,9 @@ def find_sim_neighbor(G: nx.Graph, nn: Any, sym_ops: Any = None) -> Any:
     ValueError
         If the node has no neighbors.
     """
-    neighbors_sorted = sorted(G.adj[nn])
+    neighbors_sorted = [neigh for neigh in sorted(G.adj[nn]) if _same_phase(G, nn, neigh)]
     if not neighbors_sorted:
-        raise ValueError(f"Grain {nn} has no neighbors.")
+        raise ValueError(f"Grain {nn} has no neighbors in the same phase.")
 
     if all("misorientation" in G[nn][neigh] for neigh in neighbors_sorted):
         angles = [G[nn][neigh]["misorientation"] for neigh in neighbors_sorted]
@@ -592,31 +685,46 @@ def get_node_boundary_stats(G: nx.Graph, node_id: Any, connectivity: int = 4) ->
 
 
 def merge_boundary_artifact_nodes(
-        G, gs_min, connectivity=4, npix_factor=2.0, boundary_fraction_min=0.85):
+    G: nx.Graph,
+    gs_min: float,
+    connectivity: int = 4,
+    npix_factor: float = 2.0,
+    boundary_fraction_min: float = 0.85,
+    store_merge_pixels: bool = False,
+) -> list[dict]:
     """
-    Merge small boundary artifact nodes into their most similar neighbor.
+    Merge small nodes with a high boundary pixel fraction.
+
+    Each selected node is absorbed into its crystallographically closest
+    neighbor before the remaining graph cleanup steps. A record is retained
+    for every performed merge.
 
     Parameters
     ----------
-    G : networkx.Graph
+    G : nx.Graph
         Initial microstructure graph.
     gs_min : float
         Minimum grain size threshold from the EBSD workflow.
     connectivity : int, optional
-        Connectivity criterion for neighbors (4 or 8). Default is 4.
+        Connectivity criterion for neighbors. Default is 4.
     npix_factor : float, optional
-        Candidate size threshold as ``max(npix_factor * gs_min, 40)``. Default is 2.0.
+        Candidate size threshold as ``max(npix_factor * gs_min, 40)``.
+        Default is 2.0.
     boundary_fraction_min : float, optional
-        Minimum boundary pixel fraction for a node to be considered. Default is 0.85.
+        Minimum boundary pixel fraction for a node to be considered.
+        Default is 0.85.
+    store_merge_pixels : bool, optional
+        If True, copy source and target pixel arrays before each merge.
+        Default is False.
 
     Returns
     -------
-    list[dict]
-        Records for all performed boundary artifact merges.
+    list of dict
+        Records for all merges performed in this pass.
     """
     debug_records = []
     npix_limit = max(int(npix_factor * gs_min), 40)
-    sym_ops = get_proper_symmetry_quaternions(G.graph['symmetry'])
+    sym_ops = get_proper_symmetry_quaternions(G.graph["symmetry"])
 
     changed = True
     while changed:
@@ -624,52 +732,82 @@ def merge_boundary_artifact_nodes(
         _compute_all_edge_misorientations(G, sym_ops)
         candidate_rows = []
 
-        # collect small nodes that are mostly made of boundary pixels
-        for node_id in list(G.nodes):
-            npix = int(G.nodes[node_id]['npix'])
+        for node_id in sorted(G.nodes):
+            npix = int(G.nodes[node_id]["npix"])
             if npix > npix_limit:
                 continue
             if G.degree[node_id] <= 0:
                 continue
 
             stats = get_node_boundary_stats(G, node_id, connectivity=connectivity)
-            if stats['boundary_fraction'] < boundary_fraction_min:
+            if stats["boundary_fraction"] < boundary_fraction_min:
                 continue
 
-            sim_neigh, ori_neigh = find_sim_neighbor(G, node_id, sym_ops=sym_ops)
-            candidate_rows.append((
-                -stats['boundary_fraction'],
-                npix,
-                float(ori_neigh),
-                int(node_id),
-                stats,
-                int(sim_neigh),
-            ))
+            try:
+                similar_neighbor, ori_angle = find_sim_neighbor(
+                    G, node_id, sym_ops=sym_ops
+                )
+            except ValueError:
+                continue
 
-        candidate_rows.sort()
+            candidate_rows.append(
+                (
+                    -stats["boundary_fraction"],
+                    npix,
+                    float(ori_angle),
+                    int(node_id),
+                    stats,
+                    int(similar_neighbor),
+                )
+            )
 
-        # merge one candidate at a time because every merge changes the graph
-        for _, _, ori_neigh, node_id, stats, sim_neigh in candidate_rows:
-            if node_id not in G.nodes or sim_neigh not in G.nodes:
+        candidate_rows.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+
+        for _, _, ori_angle, node_id, stats, similar_neighbor in candidate_rows:
+            if node_id not in G.nodes or similar_neighbor not in G.nodes:
                 continue
 
             record = {
-                'node': int(node_id),
-                'reason': 'boundary_artifact_premerge',
-                'target': int(sim_neigh),
-                'angle_rad': float(ori_neigh),
-                'angle_deg': float(np.degrees(ori_neigh)),
-                'node_npix': int(G.nodes[node_id]['npix']),
-                'target_npix': int(G.nodes[sim_neigh]['npix']),
-                'boundary_pixels': int(stats['boundary_pixels']),
-                'boundary_fraction': float(stats['boundary_fraction']),
-                'neighbor_count': int(stats['neighbor_count']),
-                'bbox_fill_fraction': float(stats['bbox_fill_fraction']),
-                'npix_limit': int(npix_limit),
-                'will_merge': True,
+                "node": int(node_id),
+                "reason": "boundary_artifact_premerge",
+                "target": int(similar_neighbor),
+                "angle_rad": float(ori_angle),
+                "angle_deg": float(np.degrees(ori_angle)),
+                "node_npix": int(G.nodes[node_id]["npix"]),
+                "target_npix": int(G.nodes[similar_neighbor]["npix"]),
+                "boundary_pixels": int(stats["boundary_pixels"]),
+                "boundary_fraction": float(stats["boundary_fraction"]),
+                "neighbor_count": int(stats["neighbor_count"]),
+                "bbox_fill_fraction": float(stats["bbox_fill_fraction"]),
+                "npix_limit": int(npix_limit),
+                "boundary_fraction_min": float(boundary_fraction_min),
+                "will_merge": True,
             }
+            source_pixels = np.asarray(G.nodes[node_id]["pixels"], dtype=int)
+            if source_pixels.size > 0:
+                rows, columns = np.unravel_index(
+                    source_pixels,
+                    G.graph["label_map"].shape,
+                )
+                record["source_center"] = [
+                    float(np.mean(columns)),
+                    float(np.mean(rows)),
+                ]
+
+            if store_merge_pixels:
+                record["node_pixels"] = source_pixels.copy()
+                record["target_pixels_before"] = np.asarray(
+                    G.nodes[similar_neighbor]["pixels"],
+                    dtype=int,
+                ).copy()
+
             debug_records.append(record)
-            merge_nodes(G, node_id, sim_neigh, preserve_target_orientation=True)
+            merge_nodes(
+                G,
+                node_id,
+                similar_neighbor,
+                preserve_target_orientation=True,
+            )
             changed = True
             break
 
@@ -789,9 +927,9 @@ def build_graph_from_labeled_pixels(
     sym : Symmetry
         Crystal symmetry used to compute node average orientations.
     dx : float
-        Pixel spacing in row direction.
+        Physical pixel spacing along x, the image column direction.
     dy : float
-        Pixel spacing in column direction.
+        Physical pixel spacing along y, the image row direction.
     connectivity : int, optional
         Connectivity criterion for neighbors (4 or 8). Default is 4.
 
@@ -859,6 +997,37 @@ def build_graph_from_labeled_pixels(
 
     G.add_edges_from(sorted(edges))
     return G
+
+
+def _graph_points_to_image(graph, points):
+    """
+    Convert grain geometry to image column and row coordinates.
+
+    The explicit Kanapy convention stores scaled rows and columns. Existing
+    handoffs with origins and no such marker retain physical x and y coordinates.
+
+    Parameters
+    ----------
+    graph : networkx.Graph
+        Graph containing pixel spacing and optional coordinate origins.
+    points : array_like
+        One point or an array of points in the graph coordinate convention.
+
+    Returns
+    -------
+    numpy.ndarray
+        Image column and row coordinates with the input shape.
+    """
+    values = np.asarray(points, dtype=float).copy()
+    dx = float(graph.graph.get('dx', 1.0))
+    dy = float(graph.graph.get('dy', 1.0))
+    if graph.graph.get('geometry_convention') != 'kanapy_row_column' and (
+            'origin_x' in graph.graph or 'origin_y' in graph.graph):
+        values[..., 0] = (values[..., 0] - graph.graph.get('origin_x', 0.0)) / dx
+        values[..., 1] = (values[..., 1] - graph.graph.get('origin_y', 0.0)) / dy
+    else:
+        values = values[..., ::-1] / np.array([dy, dx])
+    return values
 
 
 def visualize_graph(G: nx.Graph, node_size: int = 100, fs: int = 12) -> Any:
@@ -971,7 +1140,7 @@ def find_similar_regions(array: np.ndarray, tolerance: float = 0.087, connectivi
 
 
 
-def find_similar_regions_by_misorientation(ori_map, phase_mask, sym, tolerance=0.174533, connectivity=4):
+def find_similar_regions_by_misorientation(ori_map, phase_mask, sym, tolerance=np.deg2rad(5.0), connectivity=4):
     """
     Identify connected regions using local pixel to pixel misorientation.
 
@@ -984,7 +1153,7 @@ def find_similar_regions_by_misorientation(ori_map, phase_mask, sym, tolerance=0
     sym : Symmetry
         Crystal symmetry used for misorientation calculations.
     tolerance : float, optional
-        Maximum allowed local misorientation in radians. Default is 0.174533.
+        Maximum allowed local misorientation in radians. Default is five degrees.
     connectivity : int, optional
         Connectivity criterion for neighbors (4 or 8). Default is 4.
 
@@ -2178,8 +2347,8 @@ class EBSDmap:
 
     Parameters
     ----------
-    fname : str
-        Filename including path to EBSD file.
+    fname : str or pathlib.Path, optional
+        EBSD file path, required unless loaded data is supplied.
     gs_min : float, optional
         Minimum grain size in pixels. Grains smaller than this are disregarded
         for statistical analysis. Default is 10.0.
@@ -2217,6 +2386,11 @@ class EBSDmap:
         Deprecated. Use `show_hist` instead.
     plot : bool, optional
         Deprecated. Use `show_plot` instead.
+    hex_grid_target_spacing : float, optional
+        Isotropic physical spacing for hexagonal measurements. The default
+        keeps the rectangular map shape reported by orix.
+    ebsd_data : LoadedEBSDData, optional
+        Measurements and grid metadata already loaded by ``EBSDDataLoader``.
 
     Attributes
     ----------
@@ -2248,7 +2422,7 @@ class EBSDmap:
         Total number of grains after merging/pruning.
     """
 
-    def __init__(self, fname, gs_min=MIN_GRAIN_SIZE_PIXELS,
+    def __init__(self, fname=None, gs_min=MIN_GRAIN_SIZE_PIXELS,
                  vf_min=DEFAULT_MIN_VOLUME_FRACTION,
                  max_angle=DEFAULT_MAX_MISORIENTATION_DEGREES,
                  connectivity=DEFAULT_CONNECTIVITY,
@@ -2257,44 +2431,47 @@ class EBSDmap:
                  convex_hull_min_points=CONVEX_HULL_MIN_POINTS,
                  similar_orientation_merge_degrees=DEFAULT_SIMILAR_ORIENTATION_MERGE_DEGREES,
                  show_plot=True, show_hist=None, felzenszwalb=False, show_grains=False,
-                 show_graph=False, graph_only=False, hist=None, plot=None):
+                 show_graph=False, graph_only=False, hist=None, plot=None, *,
+                 hex_grid_target_spacing=None, ebsd_data=None):
+        """
+        Analyze measured EBSD phases and build their grain graphs.
 
+        Existing plotting flags retain their order and defaults. Optional loaded
+        data supplies the same workflow without reading another file.
 
-        def _reassign(pix, ori, phid, bads):
-            """
-            Reassign the orientation of a pixel based on neighboring pixels of the same phase.
+        Parameters
+        ----------
+        fname : str or pathlib.Path, optional
+            EBSD file to load when ``ebsd_data`` is not provided.
+        gs_min, vf_min : float, optional
+            Minimum grain pixel count and retained phase fraction.
+        max_angle, similar_orientation_merge_degrees : float, optional
+            Segmentation and graph merge misorientation thresholds in degrees.
+        connectivity : int, optional
+            Four or eight pixel connectivity.
+        boundary_artifact_size_factor, boundary_artifact_fraction_min : float, optional
+            Boundary cleanup size factor and minimum boundary pixel fraction.
+        convex_hull_min_points : int, optional
+            Minimum point count required for a valid grain hull.
+        show_plot, show_hist, show_grains, show_graph : bool, optional
+            Display the corresponding analysis figures.
+        felzenszwalb : bool, optional
+            Display the alternative image segmentation.
+        graph_only : bool, optional
+            Build cleaned graphs without fitting statistics or creating figures.
+        hist, plot : bool, optional
+            Deprecated aliases for ``show_hist`` and ``show_plot``.
+        hex_grid_target_spacing : float, optional
+            Isotropic physical spacing for hexagonal measurements. By default,
+            preserve the rectangular shape reported by orix.
+        ebsd_data : LoadedEBSDData, optional
+            Already loaded measurements and grid metadata.
 
-            Parameters
-            ----------
-            pix : int
-                Index of the pixel to be reassigned.
-            ori : ndarray
-                Array of orientations for all pixels.
-            phid : ndarray
-                Array of phase IDs for all pixels.
-            bads : set
-                Set of indices corresponding to pixels that could not be reassigned previously.
-
-            Returns
-            -------
-            None
-                Modifies `ori` in-place. If no valid neighbor is found, `pix` is added to `bads`.
-            """
-            phase = phid[pix]
-            ix = -1
-            if pix - 1 >= 0 and phid[pix - 1] == phase and pix - 1 not in bads:
-                ix = pix - 1
-            elif pix + 1 < self.npx and phid[pix + 1] == phase and pix + 1 not in bads:
-                ix = pix + 1
-            elif pix - self.sh_x >= 0 and phid[pix - self.sh_x - 1] == phase and pix - self.sh_x not in bads:
-                pix = pix - self.sh_x
-            elif pix + self.sh_x < self.npx and phid[pix + self.sh_x + 1] == phase and pix + self.sh_x not in bads:
-                ix = pix + self.sh_x
-            if ix >= 0:
-                ori[pix] = ori[ix]  # pixel orientation is reassigned
-            else:
-                bads.add(pix)  # no valid neighbor found add pix again to list
-
+        Raises
+        ------
+        ValueError
+            If input data is missing or a grid or hull parameter is invalid.
+        """
         # interpret parameters
         if plot is not None:
             show_plot = plot
@@ -2326,276 +2503,78 @@ class EBSDmap:
         self.convex_hull_min_points = int(convex_hull_min_points)
         self.similar_orientation_merge_angle = similar_orientation_merge_angle
         self.ms_data = []
-        # read EBSD map and return the orix object
-        self.emap = io.load(fname)
-        self.sh_x, self.sh_y = self.emap.shape  # shape of EBSD map in pixels
-        self.dx, self.dy = self.emap.dx, self.emap.dy  # distance in micron b/w pixels
-        self.npx = self.emap.size  # total number of pixels in EBSD map
-        # determine number of phases and generate histogram
-        phs = self.emap.phases.ids
-        Nphase = len(phs)  # number of phases
-        offs = 0 if 0 in phs else 1  # in CTX maps, there is no phase "0"
-        if '.ctf' in fname.lower():
-            phist = np.histogram(self.emap.phase_id, Nphase + offs)
-        else:
-            phist = np.histogram(self.emap.phase_id, Nphase)
-        print(f'Imported EBSD map with {Nphase} phases.')
-        if self.sh_x * self.sh_y != self.npx:
-            #if self.sh_x * self.sh_y != self.npx * 2:
-            #    raise ValueError('Shape mismatch between sh_x and sh_y!')
-            from matplotlib.collections import PolyCollection
-            from .ebsd_hex_grid import resample_ebsd_to_rect_grid
-            hex_map = True
-            self.npx = self.sh_x * self.sh_y
-            logging.warning(f"Size of map ({self.npx} px) does not match its shape: {self.sh_x, self.sh_y}"
-                            f"\nAssuming staggered hex grid of EBSD map")
-            xy = np.stack([self.emap.x, self.emap.y]).T
-        else:
-            hex_map = False
-            ori_q = None
-            xy = None
-            resample_ebsd_to_rect_grid = None
-
-        # read phase names and calculate volume fractions and plots if active
-        for n_ph, ind in enumerate(phs):
+        self.logger = logging.getLogger(__name__)
+        if hex_grid_target_spacing is not None and hex_grid_target_spacing <= 0.0:
+            raise ValueError("hex_grid_target_spacing must be positive")
+        self.hex_grid_target_spacing = hex_grid_target_spacing
+        if ebsd_data is None:
+            if fname is None:
+                raise ValueError("Either 'fname' or 'ebsd_data' must be provided")
+            ebsd_data = EBSDDataLoader().load(fname)
+        self._load_from_data(ebsd_data)
+        retained_phases = []
+        for n_ph, ind in enumerate(self.emap.phases.ids):
             if ind == -1:
                 continue
-            ih = np.searchsorted(phist[1], ind, side='right') - 1
-            if ind == phist[1][-1]:
-                ih -= 1
-            vf = phist[0][ih] / self.emap.size
-            if vf < vf_min:
-                continue
-            data = dict()  # initialize data dictionary
-            data['vf'] = vf
-            data['name'] = self.emap.phases.names[n_ph]
-            data['index'] = ind
-            data['len_x'] = self.sh_x
-            data['len_y'] = self.sh_y
-            data['delta_x'] = self.dx
-            data['delta_y'] = self.dy
+            vf = np.count_nonzero(self.emap.phase_id == ind) / self.original_npx
+            if vf >= vf_min:
+                retained_phases.append((n_ph, ind, vf))
 
-            # generate phase-specific orientations
-            if hex_map:
-                if 'ci' in self.emap.prop.keys():
-                    val_ci = self.emap.prop['ci']
-                else:
-                    val_ci = np.zeros(self.npx)
-                ipf_key = ox_plot.IPFColorKeyTSL(self.emap.phases[ind].point_group.laue)
-                mask = self.emap.phase_id == ind
-                ori_e = Orientation.from_euler(self.emap[mask].orientations.in_euler_fundamental_region())
-                ori_q = np.stack([ori_e.a, ori_e.b, ori_e.c, ori_e.d]).T
-                #rgb_val = ipf_key.orientation2color(ori_e)
-                xg, yg, phase_g, ci_g, quat_g = \
-                    resample_ebsd_to_rect_grid(xy[mask],
-                                               self.emap.phase_id[mask],
-                                               ori_q,
-                                               val_ci[mask],
-                                               nx=self.sh_y, ny=self.sh_x)
-                # get Euler Angles
-                quat_map_full = quat_g.copy()
-                q_flat = quat_g.reshape(-1, 4)
-                # remove NaNs
-                mask = ~np.isnan(q_flat[:, 0])
-                quat_g = q_flat[mask]
-                ori_e = Orientation(quat_g).in_euler_fundamental_region()
-                pid = phase_g.ravel()
+        if self.hex_grid and (len(retained_phases) > 1 or self.hex_grid_target_spacing is not None):
+            self._prepare_hex_grid()
+
+        print(f'Imported EBSD map with {len(self.emap.phases.ids)} phases.')
+        for n_ph, ind, vf in retained_phases:
+            data = {
+                "vf": vf,
+                "name": self.emap.phases.names[n_ph],
+                "index": ind,
+                "len_x": self.sh_x,
+                "len_y": self.sh_y,
+                "delta_x": self.dx,
+                "delta_y": self.dy,
+                "cs": self.emap.phases[ind].point_group.laue,
+            }
+            if self.hex_grid:
+                self._compute_hex_phase_data(data, ind)
             else:
-                pid = self.emap.phase_id
-                ori_e = self.emap[pid == ind].orientations.in_euler_fundamental_region()
-                ci_g = None
-                quat_g = None
+                self._compute_square_phase_data(data, ind)
+            self._handle_bad_pixels(data)
 
-            data['ori'] = Orientation.from_euler(ori_e)
-            data['cs'] = self.emap.phases[ind].point_group.laue
-            # assign bad pixels to one neighbor
-            # identify non-indexed pixels and pixels with low confidence index (CI)
-            if 'ci' in self.emap.prop.keys():
-                if hex_map:
-                    val = ci_g.ravel()
-                else:
-                    val = self.emap.prop['ci']
-                if len(val) == self.npx:
-                    self.ci_map = val
-                else:
-                    self.ci_map = np.zeros(self.npx)
-                    self.ci_map[pid == 0] = val
-                bad_pix = set(np.nonzero(val < 0.1)[0])
-            else:
-                bad_pix = set()
-            if len(bad_pix) > 0:
-                niter = 0
-                print(f'Initial number of bad pixels: {len(bad_pix)}')
-                nbad = len(bad_pix)
-                while len(bad_pix) > 0 and niter < 2 * nbad:
-                    bp = bad_pix.pop()
-                    _reassign(bp, data['ori'], pid, bad_pix)
-                    niter += 1
-                print(f'After {niter} loops: number of bad pixels: {len(bad_pix)}')
-
-            # calculate misorientation field
-            val = data['ori'].angle
-            if len(val) == self.npx:
-                bmap = val
-            else:
-                bmap = np.zeros(self.npx)
-                bmap[pid == ind] = val
-            data['mo_map'] = bmap
-
-            # Get IPF colors
+            data['mo_map'] = np.zeros(self.npx)
+            data['mo_map'][data['idx']] = data['ori'].angle
+            rgb_values = np.zeros((self.npx, 3))
             ipf_key = ox_plot.IPFColorKeyTSL(data['cs'])
-            if data['ori'].size == self.npx:
-                rgb_val = ipf_key.orientation2color(data['ori'])
-            else:
-                rgb_val = np.zeros((self.npx, 3))
-                rgb_val[pid == ind, :] = ipf_key.orientation2color(data['ori'])
-            data['rgb_im'] = np.reshape(rgb_val, (self.sh_x, self.sh_y, 3))
+            rgb_values[data['idx']] = ipf_key.orientation2color(data['ori'])
+            data['rgb_im'] = rgb_values.reshape(self.sh_x, self.sh_y, 3)
 
-            # generate map with grain labels
-            print('Identifying regions of homogeneous misorientations and assigning them to grains.')
-            if hex_map:
-                full_quat = quat_map_full
-                phase_mask = ~np.isnan(full_quat[:, :, 0])
-            else:
-                full_quat = np.full((self.npx, 4), np.nan, dtype=float)
-                phase_mask_flat = pid == ind
-                full_quat[phase_mask_flat] = np.asarray(data['ori'].data)
-                full_quat = full_quat.reshape((self.sh_x, self.sh_y, 4))
-                phase_mask = phase_mask_flat.reshape((self.sh_x, self.sh_y))
-
+            graph_rotations = np.full((self.npx, 4), np.nan, dtype=float)
+            graph_rotations[data['idx']] = np.asarray(data['ori'].data)
+            orientation_map = graph_rotations.reshape(self.sh_x, self.sh_y, 4)
+            phase_mask = np.zeros(self.npx, dtype=bool)
+            phase_mask[data['idx']] = True
+            phase_mask = phase_mask.reshape(self.sh_x, self.sh_y)
             labels, n_regions = find_similar_regions_by_misorientation(
-                full_quat,
-                phase_mask,
-                data['cs'],
-                tolerance=segmentation_angle,
-                connectivity=connectivity,
+                orientation_map, phase_mask, data['cs'],
+                tolerance=self.max_angle, connectivity=self.connectivity,
             )
-            print(f"Phase #{data['index']} ({data['name']}): Identified Grains: {n_regions}")
-
-            # build and visualize graph of unfiltered map
-            print('Building microstructure graph.')
-            if hex_map:
-                rot = quat_g
-            else:
-                rot = self.emap.rotations.data
-
             ms_graph = build_graph_from_labeled_pixels(
-                labels, rot, data['cs'], self.dx, self.dy, connectivity=connectivity)
-            ms_graph.name = 'Graph of microstructure'
-
-            data["initial_labels"] = labels.copy()
-            data["ori_map_debug"] = full_quat.copy()
-            data["phase_mask_debug"] = phase_mask.copy()
-            data["graph_initial"] = copy.deepcopy(ms_graph)
-            data["merge_debug"] = []
-
-            # remove thin boundary artifacts before the standard graph cleanup
-            boundary_merge_records = merge_boundary_artifact_nodes(
-                ms_graph,
-                gs_min,
-                connectivity=connectivity,
-                npix_factor=boundary_artifact_size_factor,
-                boundary_fraction_min=boundary_artifact_fraction_min,
+                labels, graph_rotations, data['cs'], self.dx, self.dy,
+                connectivity=self.connectivity,
             )
-            data["merge_debug"].extend(boundary_merge_records)
-            print(f'After boundary-artifact pre-merge, {len(ms_graph.nodes)} grains left.')
-            data["graph_boundary_merged"] = copy.deepcopy(ms_graph)
-
-            print('Starting to simplify microstructure graph.')
-
-            sym_ops = get_proper_symmetry_quaternions(ms_graph.graph['symmetry'])
-            _compute_all_edge_misorientations(ms_graph, sym_ops)
-            grain_set = set(ms_graph.nodes)
-            rem_grains = len(grain_set)
-            while rem_grains > 0:
-                num = grain_set.pop()
-                nd = ms_graph.nodes[num]
-                rem_grains = len(grain_set)
-
-                pts = np.array(np.unravel_index(nd['pixels'], (self.sh_x, self.sh_y)), dtype=float).T
-                pts[:, 0] *= self.dx
-                pts[:, 1] *= self.dy
-
-                if pts.shape[0] < convex_hull_min_points:
-                    num_ln = find_largest_neighbor(ms_graph, num)
-                    data["merge_debug"].append({
-                        "node": int(num),
-                        "reason": "no_hull",
-                        "target": int(num_ln),
-                        "node_npix": int(ms_graph.nodes[num]["npix"]),
-                        "target_npix": int(ms_graph.nodes[num_ln]["npix"]),
-                        "will_merge": True,
-                    })
-                    merge_nodes(
-                        ms_graph,
-                        num,
-                        num_ln,
-                        preserve_target_orientation=True,
-                    )
-                    continue
-
-                try:
-                    hull = ConvexHull(pts)
-                    ms_graph.nodes[num]['hull'] = hull
-                except Exception:
-                    num_ln = find_largest_neighbor(ms_graph, num)
-                    data["merge_debug"].append({
-                        "node": int(num),
-                        "reason": "no_hull",
-                        "target": int(num_ln),
-                        "node_npix": int(ms_graph.nodes[num]["npix"]),
-                        "target_npix": int(ms_graph.nodes[num_ln]["npix"]),
-                        "will_merge": True,
-                    })
-                    merge_nodes(
-                        ms_graph,
-                        num,
-                        num_ln,
-                        preserve_target_orientation=True,
-                    )
-                    continue
-
-                sim_neigh, ori_neigh = find_sim_neighbor(
-                    ms_graph,
-                    num,
-                    sym_ops=sym_ops,
-                )
-
-                data["merge_debug"].append({
-                    "node": int(num),
-                    "reason": "similar_neighbor_check",
-                    "target": int(sim_neigh),
-                    "angle_rad": float(ori_neigh),
-                    "angle_deg": float(np.degrees(ori_neigh)),
-                    "threshold_deg": float(np.degrees(similar_orientation_merge_angle)),
-                    "node_npix": int(ms_graph.nodes[num]["npix"]),
-                    "target_npix": int(ms_graph.nodes[sim_neigh]["npix"]),
-                    "will_merge": bool(ori_neigh <= similar_orientation_merge_angle),
-                })
-
-                if ori_neigh <= similar_orientation_merge_angle:
-                    merge_nodes(ms_graph, num, sim_neigh)
-
-            self.ngrains = len(ms_graph.nodes)
-            print(f'After merging of similar regions, {self.ngrains} grains left.')
-
-            # graph pruning step 2: merge small grains into their largest neighbor grain
-            grain_set = set(ms_graph.nodes)
-            rem_grains = len(grain_set)
-            while rem_grains > 0:
-                num = grain_set.pop()  # get random ID of grain and remove it from the list
-                rem_grains = len(grain_set)
-                if ms_graph.nodes[num]['npix'] < gs_min:
-                    num_ln = find_largest_neighbor(ms_graph, num)
-                    merge_nodes(
-                        ms_graph,
-                        num,
-                        num_ln,
-                        preserve_target_orientation=True,
-                    )
-            self.ngrains = len(ms_graph.nodes)
+            print(f"Phase #{ind} ({data['name']}): Identified Grains: {n_regions}")
+            self._record_graph_grid_geometry(ms_graph)
+            ms_graph.graph.update(phase_id=int(ind), phase_name=data["name"])
+            nx.set_node_attributes(ms_graph, int(ind), "phase_id")
+            nx.set_node_attributes(ms_graph, data["name"], "phase_name")
+            ms_graph.name = 'Graph of microstructure'
+            data['initial_labels'] = labels.copy()
+            data['ori_map_debug'] = orientation_map.copy()
+            data['phase_mask_debug'] = phase_mask.copy()
+            data['graph_initial'] = copy.deepcopy(ms_graph)
+            data['merge_debug'] = []
+            self._prune_graph(ms_graph, data)
             data['ngrains'] = self.ngrains
-            print(f'After elimination of small grains, {self.ngrains} grains left.')
 
             if graph_only:
                 data['graph'] = ms_graph
@@ -2607,6 +2586,11 @@ class EBSDmap:
                 continue
 
             # Extract grain statistics and axes
+            data["grain_euler_angles"] = {
+                f"grain {index}": Orientation(node["ori_av"], data["cs"])
+                .to_euler(degrees=True)[0].tolist()
+                for index, node in enumerate(ms_graph.nodes.values(), start=1)
+            }
             arr_a = []
             arr_b = []
             arr_eqd = []
@@ -2626,7 +2610,7 @@ class EBSDmap:
                 eb *= sc_fct
                 # assert np.dot(va, vb) < 1.e-9
                 # assert np.isclose(np.linalg.norm(va), 1.0)
-                omega = np.arccos(va[0])  # angle of major axis against y-axis of map in range [0, pi]
+                omega = np.arccos(va[0])  # Kanapy angle against the scaled row axis in [0, pi]
                 node['max_dia'] = ea
                 node['min_dia'] = eb
                 node['equ_dia'] = eqd
@@ -2657,24 +2641,6 @@ class EBSDmap:
             data['gs_param'] = np.array([dsig, doffs, dscale])
             data['gs_data'] = arr_eqd
             data['gs_moments'] = [dscale, dsig]
-            if show_hist:
-                fig, ax = plt.subplots()
-                hc, hb = np.histogram(arr_eqd, bins=20)
-                x0 = hb[0]
-                ind = np.nonzero(hc == 1)[0]  # find first bin with count == 1
-                if len(ind) > 0:
-                    x1 = hb[ind[0]]
-                else:
-                    x1 = max(arr_eqd)
-                x = np.linspace(x0, x1, 150)
-                y = lognorm.pdf(x, dsig, loc=doffs, scale=dscale)
-                ax.plot(x, y, '-r', label='lognorm fit')
-                ax.hist(arr_eqd, bins=20, range=(x0, x1), density=True, label='data')
-                plt.legend()
-                plt.title('Histogram of grain equivalent diameters')
-                plt.xlabel('Equivalent diameter (micron)')
-                plt.ylabel('Normalized frequency')
-                plt.show()
 
             # grain aspect ratio
             asp = arr_a / arr_b
@@ -2685,25 +2651,6 @@ class EBSDmap:
             data['ar_param'] = np.array([asig, aoffs, ascale])
             data['ar_data'] = asp
             data['ar_moments'] = [ascale, asig]
-            if show_hist:
-                # plot distribution of aspect ratios
-                fig, ax = plt.subplots()
-                hc, hb = np.histogram(asp, bins=20)
-                x0 = hb[0]
-                ind = np.nonzero(hc == 1)[0]  # find first bin with count == 1
-                if len(ind) > 0:
-                    x1 = hb[ind[0]]
-                else:
-                    x1 = max(asp)
-                x = np.linspace(x0, x1, 150)
-                y = lognorm.pdf(x, asig, loc=aoffs, scale=ascale)
-                ax.plot(x, y, '-r', label='lognorm fit')
-                ax.hist(asp, bins=20, range = (x0, x1), density=True, label='data')
-                plt.legend()
-                plt.title('Histogram of grain aspect ratio')
-                plt.xlabel('aspect ratio')
-                plt.ylabel('normalized frequency')
-                plt.show()
 
             # angles of main axis
             # fit von Mises distribution (circular normal distribution) to data
@@ -2713,17 +2660,6 @@ class EBSDmap:
             data['om_param'] = np.array([kappa, oloc])
             data['om_data'] = arr_om
             data['om_moments'] = [med_om, std_om]
-            if show_hist:
-                fig, ax = plt.subplots()
-                x = np.linspace(-np.pi, np.pi, 200)  # np.amin(omega), np.amax(omega), 150)
-                y = vonmises.pdf(x, kappa, loc=oloc)
-                ax.plot(0.5*(x+np.pi), 2 * y, '-r', label='von Mises fit')
-                ax.hist(arr_om, bins=40, density=True, label='data')
-                plt.legend()
-                plt.title('Histogram of tilt angles of major axes')
-                plt.xlabel('angle (rad)')
-                plt.ylabel('normalized frequency')
-                plt.show()
 
             print(f"Analyzed microstructure of phase #{data['index']} ({data['name']}) with {self.ngrains} grains.")
             print(f'Median values: equiv. diameter: {dscale.round(3)} micron, ' +
@@ -2734,6 +2670,8 @@ class EBSDmap:
                   f'tilt angle: {(std_om * 180 / np.pi).round(3)}°')
             data['graph'] = ms_graph
             self.ms_data.append(data)
+            if show_hist:
+                self._plot_phase_histograms(data)
 
         if show_plot:
             self.plot_mo_map()
@@ -2741,8 +2679,7 @@ class EBSDmap:
             self.plot_segmentation()
             self.plot_pf()
         if show_graph:
-            for iphase in range(len(self.ms_data)):
-                self.plot_graph_overlay(iphase=iphase)
+            self.plot_graph_overlay(iphase=None)
 
         if show_grains:
             self.plot_grains()
@@ -2750,6 +2687,759 @@ class EBSDmap:
         if felzenszwalb:
             self.plot_felsenszwalb()
         return
+
+    def _load_from_data(self, ebsd_data: LoadedEBSDData) -> None:
+        """
+        Initialize EBSDmap attributes from loaded EBSD data.
+
+        This method enables testing without file system by accepting
+        data that is already in memory.
+
+        Parameters
+        ----------
+        ebsd_data : LoadedEBSDData
+            Measurements with their original and rectangular grid metadata.
+        """
+        self.emap = ebsd_data.emap
+        self.sh_x = ebsd_data.sh_x
+        self.sh_y = ebsd_data.sh_y
+        self.dx = ebsd_data.dx
+        self.dy = ebsd_data.dy
+        self.npx = ebsd_data.npx
+        self.hex_grid = getattr(ebsd_data, "hex_grid", False)
+        self.original_npx = getattr(ebsd_data, "original_npx", None) or self.npx
+        self.source_grid = getattr(ebsd_data, "source_grid", None)
+        self.source_xstep = getattr(ebsd_data, "source_xstep", None)
+        self.source_ystep = getattr(ebsd_data, "source_ystep", None)
+
+    def _prepare_hex_grid(self):
+        """
+        Resample all staggered hexagonal fields onto one rectangular grid.
+
+        The operation is performed once for the complete map so phase labels,
+        confidence values, and orientations share the same grid. By default,
+        the output keeps the map shape reported by orix. Callers may request
+        an isotropic physical spacing explicitly.
+        """
+        target_spacing = self.hex_grid_target_spacing
+        if target_spacing is None:
+            grid_options = {
+                "nx": int(self.sh_y),
+                "ny": int(self.sh_x),
+            }
+            resampling_basis = "orix map shape"
+        else:
+            grid_options = {
+                "dx_out": target_spacing,
+                "dy_out": target_spacing,
+            }
+            resampling_basis = "requested physical spacing"
+
+        xy = np.column_stack([self.emap.x, self.emap.y])
+        phase_values = np.asarray(self.emap.phase_id)
+        quaternion_values = np.asarray(self.emap.rotations.data)
+
+        if "ci" in self.emap.prop.keys():
+            confidence_values = np.asarray(self.emap.prop["ci"])
+        else:
+            confidence_values = np.zeros(self.original_npx)
+
+        (
+            x_grid,
+            y_grid,
+            phase_grid,
+            confidence_grid,
+            quaternion_grid,
+        ) = resample_ebsd_to_rect_grid(
+            xy,
+            phase_values,
+            quaternion_values,
+            confidence_values,
+            **grid_options,
+        )
+
+        self._hex_x_grid = x_grid
+        self._hex_y_grid = y_grid
+        self._hex_phase_grid = phase_grid
+        self._hex_ci_grid = confidence_grid
+        self._hex_quat_grid = quaternion_grid
+
+        self.sh_x, self.sh_y = phase_grid.shape
+        self.npx = int(phase_grid.size)
+        self.dx = (
+            float(x_grid[0, 1] - x_grid[0, 0])
+            if self.sh_y > 1
+            else float(target_spacing or self.dx)
+        )
+        self.dy = (
+            float(y_grid[1, 0] - y_grid[0, 0])
+            if self.sh_x > 1
+            else float(target_spacing or self.dy)
+        )
+        self.grid_origin_x = float(x_grid[0, 0])
+        self.grid_origin_y = float(y_grid[0, 0])
+
+        self.logger.info(
+            "Resampled staggered hexagonal EBSD map using "
+            f"{resampling_basis}: x spacing {self.dx:g}, y spacing "
+            f"{self.dy:g}, shape ({self.sh_x}, {self.sh_y})."
+        )
+
+    def _compute_square_phase_data(self, data, phase_id):
+        """
+        Prepare one phase on the measured square grid.
+
+        Orientations are kept in the full map coordinate frame while low
+        confidence points are repaired. The selected phase is also retained
+        as a compact array for the later graph operations.
+
+        Parameters
+        ----------
+        data : dict
+            Phase data dictionary being filled.
+        phase_id : int
+            Phase ID to extract from the measured map.
+
+        Raises
+        ------
+        ValueError
+            If confidence index values cannot be aligned with either the full
+            map or the selected phase.
+        """
+        phase_flat = np.asarray(self.emap.phase_id).reshape(-1)
+        selected = phase_flat == phase_id
+        selected_indices = np.flatnonzero(selected)
+
+        euler_angles = self.emap[
+            selected
+        ].orientations.in_euler_fundamental_region()
+        orientations = Orientation.from_euler(euler_angles, symmetry=data["cs"])
+
+        quaternion_full = np.full((self.npx, 4), np.nan)
+        quaternion_full[selected_indices] = orientations.data
+
+        data["idx"] = selected_indices
+        data["ori"] = orientations
+        data["phase_id_flat"] = phase_flat
+        data["quat_full"] = quaternion_full
+
+        if "ci" not in self.emap.prop.keys():
+            return
+
+        confidence_values = np.asarray(self.emap.prop["ci"]).reshape(-1)
+        if confidence_values.size == self.npx:
+            data["ci_values"] = confidence_values
+            return
+
+        if confidence_values.size == selected_indices.size:
+            confidence_full = np.full(self.npx, np.nan)
+            confidence_full[selected_indices] = confidence_values
+            data["ci_values"] = confidence_full
+            return
+
+        raise ValueError(
+            "Confidence index values do not match the full map or selected phase."
+        )
+
+    def _compute_hex_phase_data(self, data, phase_id):
+        """
+        Resample one phase onto the rectangular EBSD grid.
+
+        One retained phase keeps the existing default interpolation from its
+        own measurements. Multiple retained phases and explicit physical
+        spacing use a shared grid so their positions remain aligned.
+
+        Parameters
+        ----------
+        data : dict
+            Phase data dictionary being filled.
+        phase_id : int
+            Phase ID to extract from the resampled map.
+        """
+        if not hasattr(self, "_hex_phase_grid"):
+            if "ci" in self.emap.prop.keys():
+                confidence_values = np.asarray(self.emap.prop["ci"])
+            else:
+                confidence_values = np.zeros(self.original_npx)
+
+            phase_mask = self.emap.phase_id == phase_id
+            xy = np.column_stack([self.emap.x, self.emap.y])
+
+            euler_angles = self.emap[
+                phase_mask
+            ].orientations.in_euler_fundamental_region()
+            orientations = Orientation.from_euler(euler_angles)
+            quaternions = np.column_stack(
+                [
+                    orientations.a,
+                    orientations.b,
+                    orientations.c,
+                    orientations.d,
+                ]
+            )
+
+            _, _, phase_grid, confidence_grid, quaternion_grid = (
+                resample_ebsd_to_rect_grid(
+                    xy[phase_mask],
+                    self.emap.phase_id[phase_mask],
+                    quaternions,
+                    confidence_values[phase_mask],
+                    nx=self.sh_y,
+                    ny=self.sh_x,
+                )
+            )
+            phase_flat = phase_grid.ravel()
+            ci_flat = confidence_grid.ravel()
+            quat_flat = quaternion_grid.reshape(-1, 4)
+            valid = np.isfinite(quat_flat).all(axis=1)
+        else:
+            phase_flat = self._hex_phase_grid.ravel()
+            ci_flat = self._hex_ci_grid.ravel()
+            quat_flat = self._hex_quat_grid.reshape(-1, 4)
+            valid = (phase_flat == phase_id) & np.isfinite(quat_flat).all(axis=1)
+
+        data["idx"] = np.flatnonzero(valid)
+        data["ori"] = Orientation(quat_flat[valid], data["cs"])
+        data["phase_id_flat"] = phase_flat
+        data["ci_values"] = ci_flat
+        data["quat_full"] = quat_flat.copy()
+
+    def _handle_bad_pixels(self, data):
+        """
+        Detect and correct bad pixels by reassigning neighboring orientations.
+
+        Pixels with low confidence index values or no valid indexing are copied
+        from nearby valid pixels in the same phase.
+
+        Parameters
+        ----------
+        data : dict
+            Phase orientations and full map confidence and phase arrays.
+        """
+
+        def _reassign(pixel, ori, phase_id, bads):
+            """
+            Reassign orientation of a pixel using its valid neighbor in the same phase.
+
+            Full map indices prevent copying across row ends or phase boundaries.
+
+            Parameters
+            ----------
+            pixel : int
+                Flat index of the measurement being repaired.
+            ori : numpy.ndarray
+                Full map orientations, modified in place.
+            phase_id : numpy.ndarray
+                Full map phase identifiers.
+            bads : set of int
+                Measurements still awaiting repair.
+            """
+
+            phase = phase_id[pixel]
+            row, col = divmod(pixel, self.sh_y)
+            ix = -1
+            if col > 0 and phase_id[pixel - 1] == phase and (pixel - 1) not in bads:
+                ix = pixel - 1
+            elif (
+                col < self.sh_y - 1
+                and phase_id[pixel + 1] == phase
+                and (pixel + 1) not in bads
+            ):
+                ix = pixel + 1
+            elif (
+                row > 0
+                and phase_id[pixel - self.sh_y] == phase
+                and (pixel - self.sh_y) not in bads
+            ):
+                ix = pixel - self.sh_y
+            elif (
+                row < self.sh_x - 1
+                and phase_id[pixel + self.sh_y] == phase
+                and (pixel + self.sh_y) not in bads
+            ):
+                ix = pixel + self.sh_y
+
+            if ix >= 0:
+                ori[pixel] = ori[ix]  # pixel orientation is reassigned
+            else:
+                bads.add(pixel)  # no valid neighbor found add pixel again to list
+
+        phase_id_values = data.get("phase_id_flat", self.emap.phase_id)
+        orientation_values = data.get("quat_full", data["ori"])
+
+        # Identify non-indexed pixels and pixels with low confidence index (CI)
+        if "ci_values" in data:
+            ci_values = data["ci_values"]
+            self.ci_map = ci_values
+            bad_mask = (ci_values < CONFIDENCE_INDEX_THRESHOLD) & (
+                phase_id_values == data["index"]
+            )
+            bad_pixels = set(np.nonzero(bad_mask)[0])
+        elif "ci" in self.emap.prop.keys():
+            ci_values = self.emap.prop["ci"]
+            if len(ci_values) == self.npx:
+                self.ci_map = ci_values
+            else:
+                self.ci_map = np.zeros(self.npx)
+                self.ci_map[self.emap.phase_id == 0] = ci_values
+
+            bad_pixels = set(np.nonzero(ci_values < CONFIDENCE_INDEX_THRESHOLD)[0])
+        else:
+            bad_pixels = set()
+
+        if len(bad_pixels) > 0:
+            niter = 0
+            self.logger.info(f"Initial number of bad pixels: {len(bad_pixels)}")
+            nbad = len(bad_pixels)
+            while (
+                len(bad_pixels) > 0
+                and niter < BAD_PIXEL_MAX_ITERATIONS_MULTIPLIER * nbad
+            ):
+                bp = bad_pixels.pop()
+                _reassign(bp, orientation_values, phase_id_values, bad_pixels)
+                niter += 1
+            self.logger.info(
+                f"After {niter} loops: number of bad pixels: {len(bad_pixels)}"
+            )
+
+        if "quat_full" in data:
+            data["ori"] = Orientation(orientation_values[data["idx"]], data["cs"])
+            del data["quat_full"]
+            data.pop("phase_id_flat", None)
+            data.pop("ci_values", None)
+
+    def _record_graph_grid_geometry(self, graph):
+        """
+        Store the rectangular grid coordinate system on a graph.
+
+        Source origins are retained as metadata. Grain geometry uses the
+        explicit Kanapy row and column convention for grain statistics.
+
+        Parameters
+        ----------
+        graph : networkx.Graph
+            Microstructure graph prepared from the rectangular label map.
+        """
+        graph.graph.update(
+            {
+                "dx": float(self.dx),
+                "dy": float(self.dy),
+                "origin_x": float(getattr(self, "grid_origin_x", 0.0)),
+                "origin_y": float(getattr(self, "grid_origin_y", 0.0)),
+                "source_grid": getattr(self, "source_grid", None),
+                "resampled_from_hex": bool(self.hex_grid),
+                "geometry_convention": "kanapy_row_column",
+                "grain_method": "graph",
+            }
+        )
+
+    def _cleanup_merge_record(
+        self,
+        ms_graph,
+        node,
+        target,
+        reason,
+        angle_rad=None,
+    ):
+        """
+        Build one graph cleanup merge record.
+
+        The record keeps compact metadata for every cleanup merge. Pixel arrays
+        are copied only when local zoom figures are requested.
+
+        Parameters
+        ----------
+        ms_graph : networkx.Graph
+            Microstructure graph before the merge is applied.
+        node : int
+            Source node that will be merged away.
+        target : int
+            Target node that will remain after the merge.
+        reason : str
+            Cleanup stage that triggered the merge.
+        angle_rad : float, optional
+            Misorientation angle in radians when the stage uses orientation.
+
+        Returns
+        -------
+        dict
+            Merge record suitable for graph metadata and optional plotting.
+        """
+        record = {
+            "node": int(node),
+            "reason": reason,
+            "target": int(target),
+            "node_npix": int(ms_graph.nodes[node]["npix"]),
+            "target_npix": int(ms_graph.nodes[target]["npix"]),
+        }
+        source_pixels = np.asarray(ms_graph.nodes[node]["pixels"], dtype=int)
+        if source_pixels.size > 0:
+            rows, columns = np.unravel_index(
+                source_pixels,
+                ms_graph.graph["label_map"].shape,
+            )
+            record["source_center"] = [
+                float(np.mean(columns)),
+                float(np.mean(rows)),
+            ]
+
+        if angle_rad is not None:
+            record["angle_rad"] = float(angle_rad)
+            record["angle_deg"] = float(np.degrees(angle_rad))
+
+        if getattr(self, "save_graph_step_zoom_figures", False):
+            record["node_pixels"] = source_pixels.copy()
+            record["target_pixels_before"] = np.asarray(
+                ms_graph.nodes[target]["pixels"],
+                dtype=int,
+            ).copy()
+
+        return record
+
+    def _node_points(self, ms_graph, node):
+        """
+        Return scaled row and column coordinates for one graph node.
+
+        Convex hull checks use these points to decide whether a graph node can
+        represent a valid grain region.
+
+        Parameters
+        ----------
+        ms_graph : networkx.Graph
+            Microstructure graph containing node pixel lists.
+        node : int
+            Graph node ID.
+
+        Returns
+        -------
+        numpy.ndarray
+            Coordinate array with shape ``(n_points, 2)``.
+        """
+        rows, columns = np.unravel_index(
+            ms_graph.nodes[node]["pixels"],
+            (self.sh_x, self.sh_y),
+        )
+        return np.column_stack((rows * self.dx, columns * self.dy))
+
+    def _assign_convex_hull(self, ms_graph, node):
+        """
+        Assign a convex hull to one node if possible.
+
+        Nodes that cannot form a hull are handled by the invalid region merge
+        stage.
+
+        Parameters
+        ----------
+        ms_graph : networkx.Graph
+            Microstructure graph.
+        node : int
+            Graph node ID.
+
+        Returns
+        -------
+        bool
+            True when the node has a valid convex hull.
+        """
+        pts = self._node_points(ms_graph, node)
+        if pts.shape[0] < self.convex_hull_min_points:
+            return False
+
+        try:
+            ms_graph.nodes[node]["hull"] = ConvexHull(pts)
+        except Exception:
+            return False
+
+        return True
+
+    def _merge_invalid_hull_nodes(self, ms_graph):
+        """
+        Merge nodes that cannot form a valid convex hull.
+
+        Invalid geometric regions are absorbed into their largest neighbor,
+        preserving the neighbor orientation during this cleanup stage.
+
+        Parameters
+        ----------
+        ms_graph : networkx.Graph
+            Microstructure graph to modify in place.
+        """
+        records = []
+        ms_graph.graph["invalid_hull_merge_records"] = records
+        changed = True
+        while changed:
+            changed = False
+            for grain_id in sorted(list(ms_graph.nodes)):
+                if grain_id not in ms_graph.nodes:
+                    continue
+
+                if self._assign_convex_hull(ms_graph, grain_id):
+                    continue
+
+                try:
+                    largest_neighbor = find_largest_neighbor(ms_graph, grain_id)
+                except ValueError:
+                    continue
+
+                records.append(
+                    self._cleanup_merge_record(
+                        ms_graph,
+                        grain_id,
+                        largest_neighbor,
+                        "invalid_hull_merge",
+                    )
+                )
+                merge_nodes(
+                    ms_graph,
+                    grain_id,
+                    largest_neighbor,
+                    preserve_target_orientation=True,
+                )
+                changed = True
+                break
+
+    def _merge_similar_orientation_nodes(self, ms_graph):
+        """
+        Merge neighboring nodes whose average orientations are similar.
+
+        This cleanup stage reduces over segmentation after invalid geometric
+        nodes have already been absorbed.
+
+        Parameters
+        ----------
+        ms_graph : networkx.Graph
+            Microstructure graph to modify in place.
+        """
+        records = []
+        ms_graph.graph["similar_orientation_merge_records"] = records
+        sym_ops = get_proper_symmetry_quaternions(ms_graph.graph["symmetry"])
+        changed = True
+        while changed:
+            changed = False
+            _compute_all_edge_misorientations(ms_graph, sym_ops)
+
+            for grain_id in sorted(list(ms_graph.nodes)):
+                if grain_id not in ms_graph.nodes:
+                    continue
+
+                try:
+                    similar_neighbor, ori_angle = find_sim_neighbor(
+                        ms_graph,
+                        grain_id,
+                        sym_ops=sym_ops,
+                    )
+                except ValueError:
+                    continue
+
+                if ori_angle > self.similar_orientation_merge_angle:
+                    continue
+
+                record = self._cleanup_merge_record(
+                    ms_graph,
+                    grain_id,
+                    similar_neighbor,
+                    "similar_orientation_merge",
+                    angle_rad=ori_angle,
+                )
+                record["threshold_deg"] = float(
+                    np.degrees(self.similar_orientation_merge_angle)
+                )
+                records.append(record)
+                merge_nodes(ms_graph, grain_id, similar_neighbor)
+                changed = True
+                break
+
+        self.ngrains = len(ms_graph.nodes)
+        self.logger.info(
+            f"After merging of similar regions, {self.ngrains} grains left."
+        )
+
+    def _merge_small_nodes(self, ms_graph):
+        """
+        Merge remaining nodes below the minimum grain size.
+
+        Small nodes are absorbed into their largest neighbor while keeping the
+        neighbor orientation unchanged. Queued nodes are checked again because
+        earlier merges may have grown them to the minimum grain size.
+
+        Parameters
+        ----------
+        ms_graph : networkx.Graph
+            Microstructure graph to modify in place.
+        """
+        records = []
+        ms_graph.graph["small_node_merge_records"] = records
+        tiny_grains = sorted(
+            nid for nid in ms_graph.nodes if ms_graph.nodes[nid]["npix"] < self.gs_min
+        )
+        tiny_grains_set = set(tiny_grains)
+        while tiny_grains:
+            grain_id = tiny_grains.pop(0)
+            tiny_grains_set.discard(grain_id)
+            if grain_id not in ms_graph.nodes:
+                continue
+            if ms_graph.nodes[grain_id]["npix"] >= self.gs_min:
+                continue
+            try:
+                largest_neighbor = find_largest_neighbor(ms_graph, grain_id)
+            except ValueError:
+                continue
+
+            record = self._cleanup_merge_record(
+                ms_graph,
+                grain_id,
+                largest_neighbor,
+                "small_node_merge",
+            )
+            record["threshold_npix"] = float(self.gs_min)
+            records.append(record)
+            merge_nodes(
+                ms_graph,
+                grain_id,
+                largest_neighbor,
+                preserve_target_orientation=True,
+            )
+
+            if (
+                ms_graph.nodes[largest_neighbor]["npix"] < self.gs_min
+                and largest_neighbor not in tiny_grains_set
+            ):
+                tiny_grains.append(largest_neighbor)
+                tiny_grains.sort()
+                tiny_grains_set.add(largest_neighbor)
+
+        self.ngrains = len(ms_graph.nodes)
+        self.logger.info(
+            f"After elimination of small grains, {self.ngrains} grains left."
+        )
+
+    def _ensure_final_convex_hulls(self, ms_graph):
+        """
+        Ensure every remaining graph node has a valid convex hull.
+
+        This validation keeps the downstream grain statistics step from using
+        geometrically invalid graph nodes.
+
+        Parameters
+        ----------
+        ms_graph : networkx.Graph
+            Cleaned microstructure graph.
+
+        Raises
+        ------
+        ValueError
+            If a remaining node cannot form a valid convex hull.
+        """
+        for grain_id, node in list(ms_graph.nodes(data=True)):
+            pts = self._node_points(ms_graph, grain_id)
+            if pts.shape[0] < self.convex_hull_min_points:
+                raise ValueError(
+                    f"Grain {grain_id} has too few pixels to compute a convex hull."
+                )
+
+            if "hull" in node:
+                continue
+
+            try:
+                node["hull"] = ConvexHull(pts)
+            except Exception as exc:
+                raise ValueError(
+                    f"Grain {grain_id} does not form a valid convex hull."
+                ) from exc
+
+    def _prune_graph(self, ms_graph, data=None):
+        """
+        Apply boundary, hull, orientation, and size cleanup in order.
+
+        Each pass consumes the completed graph from the preceding stage, so
+        orientation changes are revisited before the size threshold is applied.
+
+        Parameters
+        ----------
+        ms_graph : networkx.Graph
+            Graph to simplify in place.
+        data : dict, optional
+            Phase metadata receiving compatibility snapshots and merge records.
+        """
+        boundary_records = merge_boundary_artifact_nodes(
+            ms_graph, self.gs_min, connectivity=self.connectivity,
+            npix_factor=self.boundary_artifact_size_factor,
+            boundary_fraction_min=self.boundary_artifact_fraction_min,
+        )
+        ms_graph.graph['boundary_artifact_merge_records'] = boundary_records
+        if data is not None:
+            data['merge_debug'].extend(boundary_records)
+            data['graph_boundary_merged'] = copy.deepcopy(ms_graph)
+        self._merge_invalid_hull_nodes(ms_graph)
+        self._merge_similar_orientation_nodes(ms_graph)
+        self._merge_small_nodes(ms_graph)
+        self._ensure_final_convex_hulls(ms_graph)
+        if data is not None:
+            for key in ('invalid_hull_merge_records',
+                        'similar_orientation_merge_records', 'small_node_merge_records'):
+                data['merge_debug'].extend(ms_graph.graph[key])
+
+    @staticmethod
+    def _plot_phase_histograms(data):
+        """
+        Plot the measured distributions and fitted densities for one phase.
+
+        Axis limits, bin counts and density transforms follow the original
+        Kanapy histograms.
+
+        Parameters
+        ----------
+        data : dict
+            Retained phase row containing raw distributions and fitted parameters.
+        """
+        for prefix, title, xlabel in [
+            ("gs", "Histogram of grain equivalent diameters", "Equivalent diameter (micron)"),
+            ("ar", "Histogram of grain aspect ratios", "aspect ratio"),
+            ("om", "Histogram of tilt angles of major axes", "angle (rad)"),
+        ]:
+            values = data[f"{prefix}_data"]
+            params = data[f"{prefix}_param"]
+            figure, axis = plt.subplots()
+            if prefix == "om":
+                x = np.linspace(-np.pi, np.pi, 200)
+                y = vonmises.pdf(x, params[0], loc=params[1])
+                axis.plot(0.5 * (x + np.pi), 2 * y, "r-", label="von Mises fit")
+                axis.hist(values, bins=40, density=True, label="data")
+            else:
+                counts, edges = np.histogram(values, bins=20)
+                singletons = np.flatnonzero(counts == 1)
+                lower = edges[0]
+                upper = edges[singletons[0]] if len(singletons) else np.max(values)
+                x = np.linspace(lower, upper, 150)
+                y = lognorm.pdf(x, params[0], loc=params[1], scale=params[2])
+                axis.plot(x, y, "r-", label="lognorm fit")
+                axis.hist(values, bins=20, range=(lower, upper), density=True, label="data")
+            ylabel = "Normalized frequency" if prefix == "gs" else "normalized frequency"
+            axis.set(title=title, xlabel=xlabel, ylabel=ylabel)
+            axis.legend()
+            plt.show()
+
+    def plot_histograms(self, iphase=None):
+        """
+        Plot grain size, aspect ratio and tilt angle histograms with their fits.
+
+        Each selected phase produces three figures from the stored statistics.
+        A map loaded with ``graph_only=True`` has no fitted distributions.
+
+        Parameters
+        ----------
+        iphase : int, optional
+            Position in ``ms_data`` to plot. If None, plot all retained phases.
+
+        Raises
+        ------
+        IndexError
+            If the requested position is outside the retained phase list.
+        KeyError
+            If the selected phase has no extracted grain statistics.
+        """
+        phases = self.ms_data if iphase is None else [self.ms_data[iphase]]
+        for data in phases:
+            self._plot_phase_histograms(data)
 
     def calcORI(self, Ng, iphase=0, shared_area=None, nbins=12,
                 res_low=5, res_high=25, res_step=2, lim=5, hw_init=None,
@@ -2818,7 +3508,9 @@ class EBSDmap:
 
     def plot_pf(self, vector=None):
         """
-        Plot pole figures for all phases using the specified sample direction
+        Plot pole figures for retained phases using the specified sample direction.
+
+        Phase metadata is selected using each retained row's original identifier.
 
         Parameters
         ----------
@@ -2833,11 +3525,9 @@ class EBSDmap:
         # <111> poles in the sample reference frame
         if vector is None:
             vector = [0, 0, 1]
-        pids = np.array(self.emap.phases.ids)
-        pids = pids[pids >= 0]
-        for n_ph, data in enumerate(self.ms_data):
+        for data in self.ms_data:
             orientations = data['ori']
-            plot_pole_figure(orientations, self.emap.phases[pids[n_ph]], vector=vector)
+            plot_pole_figure(orientations, self.emap.phases[data['index']], vector=vector)
             #t_ = Miller(uvw=vector, phase=self.emap.phases[ind]).symmetrise(unique=True)
             #t_all = orientations.inv().outer(t_)
             #fig = plt.figure(figsize=(8, 8))
@@ -2849,7 +3539,9 @@ class EBSDmap:
 
     def plot_pf_proj(self, vector=None):
         """
-        Plot projected pole figures for all phases using the specified sample direction
+        Plot projected pole figures for retained phases using a sample direction.
+
+        Phase metadata is selected using each retained row's original identifier.
 
         Parameters
         ----------
@@ -2864,11 +3556,9 @@ class EBSDmap:
         # <111> poles in the sample reference frame
         if vector is None:
             vector = [0, 0, 1]
-        pids = np.array(self.emap.phases.ids)
-        pids = pids[pids >= 0]
-        for n_ph, data in enumerate(self.ms_data):
+        for data in self.ms_data:
             orientations = data['ori']
-            plot_pole_figure_proj(orientations, self.emap.phases[pids[n_ph]], vector=vector)
+            plot_pole_figure_proj(orientations, self.emap.phases[data['index']], vector=vector)
 
     def plot_grains_marked(self):
         """
@@ -2887,30 +3577,59 @@ class EBSDmap:
             plt.imshow(data['graph'].graph['label_map'] / ngr, cmap=cmap)
             for num, node in data['graph'].nodes.items():
                 ctr = data['graph'].nodes[num]['center']
-                plt.annotate(str(num), xy=(ctr[1], ctr[0]))
+                plt.annotate(str(num), xy=_graph_points_to_image(data['graph'], ctr))
                 pts = np.zeros((4, 2))
                 pts[0, :] = node['center'] - node['max_dia'] * node['maj_ax']
                 pts[1, :] = node['center'] + node['max_dia'] * node['maj_ax']
                 pts[2, :] = node['center'] - node['min_dia'] * node['min_ax']
                 pts[3, :] = node['center'] + node['min_dia'] * node['min_ax']
-                pts[:, 0] /= self.dx
-                pts[:, 1] /= self.dy
-                plt.plot(pts[0:2, 1], pts[0:2, 0], color='k')
-                plt.plot(pts[2:4, 1], pts[2:4, 0], color='red')
+                pts = _graph_points_to_image(data['graph'], pts)
+                plt.plot(pts[0:2, 0], pts[0:2, 1], color='k')
+                plt.plot(pts[2:4, 0], pts[2:4, 1], color='red')
             plt.title(f"Phase #{data['index']} ({data['name']}): Grain labels and axes: {ngr}")
             plt.colorbar(label='Grain Number')
             plt.show()
 
-    def plot_graph_overlay(
-            self, iphase=0, show_ids=False, marker_size=3.0, line_width=1.0,
-            save_path=None, show=True):
+    def get_ipf_image(self, iphase=None):
         """
-        Plot the microstructure graph on top of the EBSD IPF map.
+        Return the IPF image for one or all retained phases.
+
+        Multiple phases use their own pixels on the common EBSD grid. A
+        single phase returns its existing image without allocating a composite.
 
         Parameters
         ----------
         iphase : int, optional
-            Phase index in ``self.ms_data``. Default is 0.
+            Position in ``ms_data``. None includes all retained phases.
+
+        Returns
+        -------
+        numpy.ndarray
+            RGB image with shape ``(sh_x, sh_y, 3)``.
+        """
+        phases = self.ms_data if iphase is None else [self.ms_data[iphase]]
+        if len(phases) == 1:
+            return phases[0]["rgb_im"].reshape(self.sh_x, self.sh_y, 3)
+
+        image = np.zeros((self.sh_x * self.sh_y, 3))
+        for data in phases:
+            pixels = data["idx"]
+            image[pixels] = data["rgb_im"].reshape(-1, 3)[pixels]
+        return image.reshape(self.sh_x, self.sh_y, 3)
+
+    def plot_graph_overlay(
+            self, iphase=None, show_ids=False, marker_size=3.0, line_width=1.0,
+            save_path=None, show=True, phase_colors=None):
+        """
+        Plot retained grain graphs together on the EBSD IPF map.
+
+        Grain nodes and edges use one color per phase. Single phase maps keep
+        black markers and lines, and individual phases can still be selected.
+
+        Parameters
+        ----------
+        iphase : int, optional
+            Position in ``self.ms_data``. None includes all retained phases.
         show_ids : bool, optional
             If True, draw node IDs next to the node centers. Default is False.
         marker_size : float, optional
@@ -2922,52 +3641,57 @@ class EBSDmap:
             Default is None.
         show : bool, optional
             If True, show the figure with Matplotlib. Default is True.
+        phase_colors : dict, optional
+            Matplotlib colors keyed by original phase ID. Unspecified phases
+            use black followed by colors from the tab10 palette.
 
         Returns
         -------
         tuple
             Matplotlib figure and axes.
         """
-        data = self.ms_data[iphase]
-        G = data["graph"]
-
+        phases = self.ms_data if iphase is None else [self.ms_data[iphase]]
+        colors = {}
+        for index, data in enumerate(self.ms_data):
+            colors[data["index"]] = "black" if index == 0 else plt.get_cmap("tab10")((index - 1) % 10)
+        if phase_colors is not None:
+            colors.update(phase_colors)
         fig, ax = plt.subplots(figsize=(12, 8))
-        ax.imshow(data["rgb_im"].reshape((self.sh_x, self.sh_y, 3)))
+        ax.imshow(self.get_ipf_image(iphase))
+        legend = []
+        for data in phases:
+            graph = data["graph"]
+            color = colors[data["index"]]
+            positions = {}
+            for node_id, node in graph.nodes.items():
+                center = node.get("center")
+                if center is not None:
+                    positions[node_id] = _graph_points_to_image(graph, center)
+                elif len(node.get("pixels", [])):
+                    rows, columns = np.unravel_index(node["pixels"], (self.sh_x, self.sh_y))
+                    positions[node_id] = (columns.mean(), rows.mean())
 
-        for u, v in G.edges():
-            cu = G.nodes[u].get("center", None)
-            cv = G.nodes[v].get("center", None)
-            if cu is None or cv is None:
-                continue
+            for u, v in graph.edges():
+                if u not in positions or v not in positions:
+                    continue
+                xu, yu = positions[u]
+                xv, yv = positions[v]
+                ax.plot([xu, xv], [yu, yv], color=color, linewidth=line_width)
 
-            xu = cu[1] / self.dy
-            yu = cu[0] / self.dx
-            xv = cv[1] / self.dy
-            yv = cv[0] / self.dx
+            for node_id, (x, y) in positions.items():
+                ax.plot(x, y, "o", color=color, markersize=marker_size)
+                if show_ids:
+                    label = str(node_id) if len(phases) == 1 else f"{data['index']}:{node_id}"
+                    ax.text(x, y, label, color="white", fontsize=8, ha="center", va="center")
+            legend.append(Line2D([], [], color=color, marker="o",
+                                 label=f"{data['name']} (phase {data['index']})"))
 
-            ax.plot([xu, xv], [yu, yv], color="black", linewidth=line_width)
-
-        for node_id, node in G.nodes.items():
-            ctr = node.get("center", None)
-            if ctr is None:
-                continue
-
-            x = ctr[1] / self.dy
-            y = ctr[0] / self.dx
-            ax.plot(x, y, "ko", markersize=marker_size)
-
-            if show_ids:
-                ax.text(
-                    x,
-                    y,
-                    str(node_id),
-                    color="white",
-                    fontsize=8,
-                    ha="center",
-                    va="center",
-                )
-
-        ax.set_title(f"Phase #{data['index']} ({data['name']}): Microstructure graph")
+        if len(phases) == 1:
+            data = phases[0]
+            ax.set_title(f"Phase #{data['index']} ({data['name']}): Microstructure graph")
+        else:
+            ax.set_title("Microstructure graph: all retained phases")
+            ax.legend(handles=legend)
         ax.set_axis_off()
         fig.tight_layout()
 
@@ -3080,25 +3804,27 @@ class EBSDmap:
         for data in self.ms_data:
             visualize_graph(data['graph'])
 
-    def plot_ipf_map(self):
+    def plot_ipf_map(self, iphase=None):
         """
-        Plot the IPF (inverse pole figure) map for all phases
+        Plot the IPF map for one or all retained phases on the same image.
 
-        Notes
-        -----
-        Pixels belonging to other phases are set to black. Each phase is visualized separately.
+        Each retained phase keeps its crystallographic colors and grid positions.
+        Pixels outside the selected phases remain black.
+
+        Parameters
+        ----------
+        iphase : int, optional
+            Position in ``ms_data``. None includes all retained phases.
+
+        Returns
+        -------
+        tuple
+            Matplotlib figure and axes.
         """
-        # plot EBSD maps for all phase
-        # set pixels of other phases to black
-        for data in self.ms_data:
-            fig = plt.figure(figsize=(12, 8))
-            plt.imshow(data['rgb_im'].reshape((self.sh_x, self.sh_y, 3)))
-            """fig = self.emap.plot(
-                data['rgb_im'].reshape(self.npx, 3),
-                return_figure=True,
-                figure_kwargs={"figsize": (12, 8)},
-            )"""
-            plt.show()
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.imshow(self.get_ipf_image(iphase))
+        plt.show()
+        return fig, ax
 
     def plot_grains(self, N=5):
         """
@@ -3150,10 +3876,9 @@ class EBSDmap:
                 pts[1, :] = ctr + node['max_dia'] * node['maj_ax']
                 pts[2, :] = ctr - node['min_dia'] * node['min_ax']
                 pts[3, :] = ctr + node['min_dia'] * node['min_ax']
-                pts[:, 0] /= self.dx
-                pts[:, 1] /= self.dy
-                plt.plot(pts[0:2, 1], pts[0:2, 0], color='cyan')
-                plt.plot(pts[2:4, 1], pts[2:4, 0], color='green')
+                pts = _graph_points_to_image(data['graph'], pts)
+                plt.plot(pts[0:2, 0], pts[0:2, 1], color='cyan')
+                plt.plot(pts[2:4, 0], pts[2:4, 1], color='green')
                 plt.title(f"Phase #{data['index']} ({data['name']}): Grain #{num}")
                 plt.show()
 
