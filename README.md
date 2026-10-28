@@ -121,7 +121,7 @@ python examples/EBSD_to_RVE/graph_to_rve.py
 python examples/EBSD_to_RVE/convert_ang2rve.py
 ```
 
-All three examples use Kanapy installed in the active environment. For development, run `python -m pip install -e .` from the repository root to use this checkout. The two graph examples default to four neighboring pixels, a minimum grain size of 10 pixels, and a minimum phase pixel fraction of 3%. Multiple retained phases appear together in the image outputs, with graph nodes and edges colored by phase. Graph exports preserve each retained phase, and grain merges are restricted to the same phase. `graph_to_rve.py` generates an RVE for the majority phase; the original `convert_ang2rve.py` selects the first retained phase.
+All three examples use Kanapy installed in the active environment. For development, run `python -m pip install -e .` from the repository root to use this checkout. The two graph examples default to four neighboring pixels, a minimum grain size of 10 pixels, and a minimum phase pixel fraction of 3%. Multiple retained phases are segmented together, with each grain restricted to one phase. They appear on one EBSD map with nodes and edges colored by phase; gray edges record contact between different phases. The complete graph is available through `result.full_graph` and the pickle's `full_graph` field. Grain merges remain restricted to the same phase. Single phase analysis retains its existing path. `graph_to_rve.py` generates an RVE for the majority phase; the original `convert_ang2rve.py` selects the first retained phase.
 
 
 ## Documentation

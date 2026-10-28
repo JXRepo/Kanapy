@@ -205,6 +205,22 @@ class EBSDGraphResult:
     ebsd: Optional[EBSDmap] = None
     written_files: dict[str, Path] = field(default_factory=dict)
 
+    @property
+    def full_graph(self) -> Any:
+        """
+        Return all retained grains and their adjacency, including phase boundaries.
+
+        The existing ``graph`` field remains the selected phase for RVE code.
+        Results constructed without an EBSD map return their supplied graph.
+
+        Returns
+        -------
+        networkx.Graph
+            Complete grain graph, or the selected graph when no map is attached.
+        """
+        graph = getattr(self.ebsd, "graph", None)
+        return self.graph if graph is None else graph
+
     @classmethod
     def from_phase_data(
         cls,
@@ -269,7 +285,8 @@ class EBSDGraphResult:
         Return the full Python payload for optional pickle output.
 
         The original graph fields retain the selected phase for downstream
-        RVE code. Multiphase maps additionally include every retained graph.
+        RVE code. Multiphase maps additionally include every retained phase graph
+        and ``full_graph``, which preserves adjacency across phase boundaries.
 
         Returns
         -------
@@ -295,6 +312,7 @@ class EBSDGraphResult:
             "graph_edge_count": self.graph.number_of_edges(),
         }
         if self.ebsd is not None and len(self.ebsd.ms_data) > 1:
+            payload["full_graph"] = self.full_graph
             payload["phases"] = []
             for data in self.ebsd.ms_data:
                 payload["phases"].append({
@@ -403,6 +421,13 @@ class EBSDGraphResult:
         }
 
         if self.ebsd is not None and len(self.ebsd.ms_data) > 1:
+            full_graph = self.full_graph
+            summary["full_graph_node_count"] = full_graph.number_of_nodes()
+            summary["full_graph_edge_count"] = full_graph.number_of_edges()
+            summary["phase_boundary_edge_count"] = sum(
+                full_graph.nodes[a]["phase_id"] != full_graph.nodes[b]["phase_id"]
+                for a, b in full_graph.edges
+            )
             summary["phases"] = []
             for data in self.ebsd.ms_data:
                 summary["phases"].append({

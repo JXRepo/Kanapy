@@ -3,10 +3,12 @@ Analyze an EBSD map through grain graphs and statistics, before 3D RVE generatio
 
 The workflow creates an ``EBSDGraphResult`` with equivalent diameters, aspect
 ratios, tilt angles, and their fitted distributions for every retained phase.
-By default, phases below 3% are skipped and each retained phase is segmented
-separately using four neighboring pixels. Grain nodes store their phase ID and
-name, and only grains from the same phase can be merged. All retained phases
-appear on one EBSD map, with graph nodes and edges colored by phase.
+By default, phases below 3% are skipped. Multiple retained phases are segmented
+together using four neighboring pixels, with each grain restricted to one phase.
+Grain nodes store their phase ID and name, and only grains from the same phase
+can be merged. All retained phases appear on one EBSD map, with nodes and edges
+colored by phase and gray edges between adjacent grains of different phases.
+The full graph is available as result.full_graph and in the graph pickle.
 
 The output switches below enable graph files, statistics.json, histograms,
 misorientation and IPF maps, segmentation images, and pole figures. Results go

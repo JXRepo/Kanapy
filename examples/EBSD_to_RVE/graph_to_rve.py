@@ -16,6 +16,7 @@ corresponding defaults below. Run with --help for the available options.
 
 The optional extra outputs include polyhedral figures and Abaqus files.
 With multiple retained phases, the EBSD IPF and graph figures show them together.
+Gray graph edges record contact between different phases, which cannot merge.
 RVE generation continues to use the retained phase with the largest fraction.
 
 Author: Jun Xue

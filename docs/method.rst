@@ -128,10 +128,11 @@ EBSD reading
 ------------
 
 Kanapy reads two dimensional EBSD maps and reconstructs their grains as graphs.
-The analysis is handled by :class:`kanapy.texture.EBSDmap`. Each retained phase
-has its own grain graph, initial segmentation, and cleanup records in
-``ebsd.ms_data``. These objects can be used directly for plotting, statistics,
-and RVE generation without writing intermediate files.
+The analysis is handled by :class:`kanapy.texture.EBSDmap`. ``ebsd.graph``
+contains all retained grains and their adjacency, including phase boundaries.
+Phase graphs, initial segmentation, and cleanup records remain available in
+``ebsd.ms_data`` for statistics and RVE generation. These objects can be used
+directly without writing intermediate files.
 
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Phase selection and scan grids
@@ -153,8 +154,8 @@ The resampling path depends on the number of phases remaining after filtering:
   fraction filter.
 * With multiple retained phases, Kanapy creates one grid for the complete map.
   Phase labels, confidence indices, and orientations use the same nearest
-  measurement at each grid position. Each phase is then processed through its
-  own mask, keeping the phase positions aligned.
+  measurement at each grid position. The retained phases are segmented together
+  on this grid, with connectivity restricted to pixels of the same phase.
 
 Setting ``hex_grid_target_spacing`` explicitly selects the shared grid path
 with the requested isotropic physical spacing, including for a single phase.
@@ -169,18 +170,21 @@ Initial region construction
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Regions are formed by :func:`kanapy.texture.find_similar_regions_by_misorientation`.
-A pixel pair is connected when both pixels belong to the current phase and
+A pixel pair is connected when both pixels belong to the same retained phase and
 their symmetry reduced misorientation is at most the selected threshold.
 The default threshold is 5 degrees. The implementation evaluates neighboring
 pixel pairs in batches and labels the connected components of their sparse
 adjacency graph. This implements the same connectivity rule as breadth first
-region growing.
+region growing. Multiple retained phases share one component labeling pass,
+using each phase's own crystal symmetry for the orientation comparisons.
+With one retained phase, the existing segmentation path is preserved.
 
 The default ``connectivity=4`` uses horizontal and vertical pixel neighbors.
 Setting ``connectivity=8`` also includes diagonal neighbors. The chosen
 connectivity is used for segmentation, grain adjacency, and boundary analysis.
-Pixels outside the current phase mask remain background in that phase's
-grain label map.
+For multiple retained phases, filtered and unindexed pixels remain background
+in the complete label map. Each phase's separate analysis map also masks out
+the other phases. The single phase hex filling behavior described above is unchanged.
 
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Graph construction and phase data
@@ -190,8 +194,9 @@ Graph construction and phase data
 each labeled region. Each node stores its pixel indices, pixel count
 (``npix``), mean orientation (``ori_av``), and orientation spread (``ori_std``).
 The graph stores the grain label map, pixel rotations used for reconstruction,
-crystal symmetry, and grid geometry. ``EBSDmap`` also adds ``phase_id`` and
-``phase_name`` to the graph and every grain node.
+crystal symmetry, and grid geometry. The complete multiphase graph stores
+symmetries keyed by phase ID. Every grain node has ``phase_id`` and
+``phase_name`` attributes; the individual phase graphs also carry these fields.
 
 The mean orientation is computed by :func:`kanapy.texture.mean_orientation_data`.
 Pixel quaternions are normalized, symmetry equivalent orientations are aligned
@@ -199,12 +204,17 @@ to a reference, and the ``q`` versus ``-q`` ambiguity is handled before
 averaging. The mean quaternion is the dominant eigenvector of the quaternion
 accumulator matrix.
 
-Edges connect adjacent labeled regions within the same phase. Region label
-``0`` denotes background and is not a grain node. Grain IDs are local to each
-phase, so a grain in a multiphase result is identified by its phase ID and
-node ID together. There are no additional phase nodes or edges between phases.
-Neighbor selection and merging check phase membership, and a direct attempt
-to merge nodes tagged with different phases raises an error.
+Edges connect adjacent labeled regions, including grains from different phases.
+Region label ``0`` denotes background and is not a grain node. Grain IDs are
+unique across the complete map. In a multiphase graph, edges carry an
+``is_phase_boundary`` flag. These edges record adjacency; they do not introduce
+a physical interface model. No additional phase nodes are created.
+
+Cleanup selects only neighbors in the same phase. A direct attempt to merge
+nodes tagged with different phases raises an error. Interface edges are kept
+when either endpoint merges with a neighbor of its own phase. Orientation
+comparisons and orientation averaging use the symmetry of the relevant phase;
+interface edges do not receive a same phase misorientation value.
 
 ^^^^^^^^^^^^^
 Graph cleanup
@@ -291,7 +301,9 @@ from the repository root before starting Python:
     ebsd = result.ebsd
 
 ``result.graph`` and ``result.phase_data`` refer to the retained phase with
-the largest original pixel fraction. All retained phase graphs remain
+the largest original pixel fraction. ``result.full_graph`` returns the complete
+graph from ``result.ebsd.graph``, including phase boundaries. With one retained
+phase, it is the same object as ``result.graph``. Individual phase graphs remain
 available through ``result.ebsd.ms_data``. The original phase ID is
 ``result.phase_index``; ``result.selected_phase_position`` is its position
 in the retained phase list.
@@ -299,10 +311,11 @@ in the retained phase list.
 No files are written by default. Supply an
 :class:`kanapy.graph_workflow.EBSDGraphOutputOptions` instance to enable
 pickle, JSON summary, graph overlay, IPF image, or diagnostic step figures.
-For multiple retained phases, the pickle payload adds a ``phases`` list
-containing every phase graph and its metadata. The JSON summary lists the
-node and edge counts for each phase. The original top level graph fields
-continue to describe the selected phase.
+For multiple retained phases, the pickle payload adds ``full_graph`` and a
+``phases`` list containing every phase graph and its metadata. The JSON summary
+includes ``full_graph_node_count``, ``full_graph_edge_count``, and
+``phase_boundary_edge_count``, as well as counts for each phase. The original
+top level graph fields continue to describe the selected phase.
 
 ^^^^^^^^^^^^^^
 Graph plotting
@@ -310,7 +323,9 @@ Graph plotting
 
 :meth:`kanapy.texture.EBSDmap.plot_graph_overlay` draws the retained grain
 graphs on one EBSD inverse pole figure map. With one phase, the nodes and
-edges are black. With multiple phases, they use phase colors and a legend.
+edges are black. With multiple phases, nodes and edges within each phase use
+phase colors. Edges across phase boundaries are gray and have a separate
+legend entry.
 Node positions come from stored centers or, when statistics are skipped,
 the mean image coordinates of their pixels.
 

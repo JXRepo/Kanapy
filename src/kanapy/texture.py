@@ -11,7 +11,7 @@ import numpy as np
 import networkx as nx
 import json
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from matplotlib.lines import Line2D
 from kanapy.core import get_grain_geom
 from kanapy.ebsd_io import EBSDDataLoader, LoadedEBSDData
@@ -219,14 +219,16 @@ def get_proper_symmetry_quaternions(sym: Any) -> Any:
 
     Parameters
     ----------
-    sym : object or numpy.ndarray
-        ORIX symmetry object or an existing quaternion array.
+    sym : object, numpy.ndarray or dict
+        ORIX symmetry, an existing quaternion array, or symmetries keyed by phase ID.
 
     Returns
     -------
-    numpy.ndarray
-        Proper symmetry operators with shape ``(n_ops, 4)``.
+    numpy.ndarray or dict
+        Proper symmetry operators, optionally keyed by phase ID.
     """
+    if isinstance(sym, dict):
+        return {phase: get_proper_symmetry_quaternions(value) for phase, value in sym.items()}
     if isinstance(sym, np.ndarray):
         return np.asarray(sym, dtype=float)
 
@@ -345,8 +347,8 @@ def _compute_all_edge_misorientations(G, sym_ops):
     ----------
     G : networkx.Graph
         Microstructure graph with average orientations on nodes.
-    sym_ops : numpy.ndarray
-        Proper symmetry operators used for misorientation reduction.
+    sym_ops : numpy.ndarray or dict
+        Proper symmetry operators, optionally keyed by phase ID.
     """
     edges = []
     for node_a, node_b in G.edges():
@@ -357,11 +359,20 @@ def _compute_all_edge_misorientations(G, sym_ops):
     if not edges:
         return
 
-    q_a = np.array([G.nodes[node_a]["ori_av"] for node_a, _node_b in edges])
-    q_b = np.array([G.nodes[node_b]["ori_av"] for _node_a, node_b in edges])
-    angles = _batch_misorientation_angle(q_a, q_b, sym_ops)
-    for (node_a, node_b), angle in zip(edges, angles):
-        G[node_a][node_b]["misorientation"] = float(angle)
+    if isinstance(sym_ops, dict):
+        phase_edges = {}
+        for node_a, node_b in edges:
+            phase = G.nodes[node_a]["phase_id"]
+            phase_edges.setdefault(phase, []).append((node_a, node_b))
+        groups = [(pairs, sym_ops[phase]) for phase, pairs in phase_edges.items()]
+    else:
+        groups = [(edges, sym_ops)]
+    for pairs, operators in groups:
+        q_a = np.array([G.nodes[node_a]["ori_av"] for node_a, _node_b in pairs])
+        q_b = np.array([G.nodes[node_b]["ori_av"] for _node_a, node_b in pairs])
+        angles = _batch_misorientation_angle(q_a, q_b, operators)
+        for (node_a, node_b), angle in zip(pairs, angles):
+            G[node_a][node_b]["misorientation"] = float(angle)
 
 
 def _refresh_node_misorientation_cache(G, node, sym_ops=None):
@@ -377,9 +388,9 @@ def _refresh_node_misorientation_cache(G, node, sym_ops=None):
         Microstructure graph with average orientations on nodes.
     node : int
         Grain node whose incident edge cache values should be refreshed.
-    sym_ops : numpy.ndarray, optional
-        Proper symmetry operators. If omitted, they are built from graph
-        symmetry metadata.
+    sym_ops : numpy.ndarray or dict, optional
+        Proper symmetry operators, optionally keyed by phase ID. If omitted,
+        they are built from graph symmetry metadata.
     """
     neighbors_sorted = []
     for neighbor in sorted(G.adj[node]):
@@ -392,6 +403,8 @@ def _refresh_node_misorientation_cache(G, node, sym_ops=None):
 
     if sym_ops is None:
         sym_ops = get_proper_symmetry_quaternions(G.graph["symmetry"])
+    if isinstance(sym_ops, dict):
+        sym_ops = sym_ops[G.nodes[node]["phase_id"]]
 
     q_a = np.tile(G.nodes[node]["ori_av"], (len(neighbors_sorted), 1))
     q_b = np.array([G.nodes[neigh]["ori_av"] for neigh in neighbors_sorted])
@@ -480,9 +493,12 @@ def merge_nodes(
 
     if not preserve_target_orientation:
         if "rotations" in G.graph and "symmetry" in G.graph:
+            sym = G.graph["symmetry"]
+            if isinstance(sym, dict):
+                sym = sym[G.nodes[node2]["phase_id"]]
             G.nodes[node2]["ori_av"] = mean_orientation_data(
                 G.graph["rotations"][merged_pixels],
-                G.graph["symmetry"],
+                sym,
             )
         else:
             # keep old graph objects usable when original pixel orientations are missing
@@ -512,7 +528,10 @@ def merge_nodes(
 
     for neigh in sorted(G.adj[node1]):
         if neigh != node2:
+            phase_boundary = G[node1][neigh].get("is_phase_boundary")
             G.add_edge(node2, neigh)
+            if phase_boundary is not None:
+                G[node2][neigh]["is_phase_boundary"] = phase_boundary
 
     # remove node1 from graph and update label_map
     G.remove_node(node1)
@@ -583,9 +602,9 @@ def find_sim_neighbor(G: nx.Graph, nn: Any, sym_ops: Any = None) -> Any:
         The graph also contains a 'symmetry' key in G.graph used for orientation calculations.
     nn : int
         Node ID for which the most similar neighbor is to be found.
-    sym_ops : numpy.ndarray, optional
-        Proper symmetry operators. Pass this when calling in a loop to avoid
-        rebuilding symmetry data.
+    sym_ops : numpy.ndarray or dict, optional
+        Proper symmetry operators, optionally keyed by phase ID. Pass this
+        when calling in a loop to avoid rebuilding symmetry data.
 
     Returns
     -------
@@ -608,6 +627,8 @@ def find_sim_neighbor(G: nx.Graph, nn: Any, sym_ops: Any = None) -> Any:
     else:
         if sym_ops is None:
             sym_ops = get_proper_symmetry_quaternions(G.graph["symmetry"])
+        if isinstance(sym_ops, dict):
+            sym_ops = sym_ops[G.nodes[nn]["phase_id"]]
 
         q_a = np.tile(G.nodes[nn]["ori_av"], (len(neighbors_sorted), 1))
         q_b = np.array([G.nodes[neigh]["ori_av"] for neigh in neighbors_sorted])
@@ -818,7 +839,8 @@ def summarize_labels(
     label_array: np.ndarray,
     rotations: Any,
     sym: Any,
-    wanted_labels: Any = None) -> dict[str, Any]:
+    wanted_labels: Any = None,
+    phase_map: Any = None) -> list[tuple[int, dict[str, Any]]]:
     """
     Summarize labeled pixels with average orientation and statistics.
 
@@ -834,10 +856,12 @@ def summarize_labels(
         2D array of integer labels.
     rotations : ndarray of shape (H*W, D)
         Orientation data corresponding to each pixel (e.g., emap.rotations.data).
-    sym : Symmetry
-        Crystal symmetry used to compute orientation means.
+    sym : Symmetry or dict
+        Crystal symmetry, or symmetries keyed by phase ID for a shared map.
     wanted_labels : sequence of int, optional
         List of label IDs to summarize. If None, all labels in `label_array` are used.
+    phase_map : ndarray, optional
+        Phase IDs on the same grid as the labels. Each grain must contain one phase.
 
     Returns
     -------
@@ -892,14 +916,23 @@ def summarize_labels(
         idx = np.array([pos[int(l)] for l in labels_out], dtype=int)
 
     nodes = []
+    phases = None if phase_map is None else np.asarray(phase_map).ravel()
     for lbl, i in zip(labels_out, idx):
         pix = pixels_list[i]
+        node_symmetry = sym
+        if phases is not None:
+            phase = int(phases[pix[0]])
+            if np.any(phases[pix] != phase):
+                raise ValueError("A grain cannot contain pixels from different phases.")
+            node_symmetry = sym[phase]
         info = {
             "npix": int(counts[i]),
             "pixels": pix,
-            "ori_av": mean_orientation_data(rot[pix], sym),
+            "ori_av": mean_orientation_data(rot[pix], node_symmetry),
             "ori_std": stds[i],
         }
+        if phases is not None:
+            info["phase_id"] = phase
         nodes.append((int(lbl), info))
     return nodes
 
@@ -910,7 +943,8 @@ def build_graph_from_labeled_pixels(
     sym: Any,
     dx: float,
     dy: float,
-    connectivity: int = 4) -> nx.Graph:
+    connectivity: int = 4,
+    phase_map: Any = None) -> nx.Graph:
     """
     Build a graph representation of a microstructure from labeled pixels.
 
@@ -924,14 +958,16 @@ def build_graph_from_labeled_pixels(
         2D array of integer labels representing grains.
     rot : ndarray
         Quaternion orientation data for all pixels in ``label_array``.
-    sym : Symmetry
-        Crystal symmetry used to compute node average orientations.
+    sym : Symmetry or dict
+        Crystal symmetry, or symmetries keyed by phase ID for a shared map.
     dx : float
         Physical pixel spacing along x, the image column direction.
     dy : float
         Physical pixel spacing along y, the image row direction.
     connectivity : int, optional
         Connectivity criterion for neighbors (4 or 8). Default is 4.
+    phase_map : ndarray, optional
+        Phase IDs on the label grid. Enables node phase IDs and interface edge flags.
 
     Returns
     -------
@@ -947,7 +983,7 @@ def build_graph_from_labeled_pixels(
     - Loops over all pixels to add edges between neighboring grains
     - The function preserves the shape and indices of `label_array`
     """
-    nodes = summarize_labels(label_array, rot, sym)
+    nodes = summarize_labels(label_array, rot, sym, phase_map=phase_map)
     G = nx.Graph(label_map=label_array.copy(), symmetry=sym, rotations=rot,
                  dx=dx, dy=dy)
     G.add_nodes_from(nodes)
@@ -996,6 +1032,9 @@ def build_graph_from_labeled_pixels(
                     edges.add(edge)
 
     G.add_edges_from(sorted(edges))
+    if phase_map is not None:
+        for node_a, node_b in G.edges:
+            G[node_a][node_b]["is_phase_boundary"] = not _same_phase(G, node_a, node_b)
     return G
 
 
@@ -1140,7 +1179,8 @@ def find_similar_regions(array: np.ndarray, tolerance: float = 0.087, connectivi
 
 
 
-def find_similar_regions_by_misorientation(ori_map, phase_mask, sym, tolerance=np.deg2rad(5.0), connectivity=4):
+def find_similar_regions_by_misorientation(
+        ori_map, phase_mask, sym, tolerance=np.deg2rad(5.0), connectivity=4, phase_map=None):
     """
     Identify connected regions using local pixel to pixel misorientation.
 
@@ -1149,13 +1189,16 @@ def find_similar_regions_by_misorientation(ori_map, phase_mask, sym, tolerance=n
     ori_map : ndarray of shape (H, W, 4)
         Quaternion map for the full 2D image.
     phase_mask : ndarray of shape (H, W)
-        Boolean mask selecting the pixels that belong to the current phase.
-    sym : Symmetry
-        Crystal symmetry used for misorientation calculations.
+        Boolean mask selecting pixels of the retained phase or phases.
+    sym : Symmetry or dict
+        Crystal symmetry, or symmetries keyed by phase ID for a shared map.
     tolerance : float, optional
         Maximum allowed local misorientation in radians. Default is five degrees.
     connectivity : int, optional
         Connectivity criterion for neighbors (4 or 8). Default is 4.
+    phase_map : ndarray of shape (H, W), optional
+        Phase IDs for unified segmentation. Only pixels of the same phase can
+        connect, using that phase's symmetry before one global labeling pass.
 
     Returns
     -------
@@ -1171,6 +1214,10 @@ def find_similar_regions_by_misorientation(ori_map, phase_mask, sym, tolerance=n
         raise ValueError("ori_map must have shape (rows, cols, 4).")
     if ori_map.shape[:2] != phase_mask.shape:
         raise ValueError("ori_map and phase_mask must have matching spatial dimensions.")
+    if phase_map is not None:
+        phase_map = np.asarray(phase_map)
+        if phase_map.shape != phase_mask.shape:
+            raise ValueError("phase_map and phase_mask must have matching spatial dimensions.")
 
     rows, cols = phase_mask.shape
     sym_ops = get_proper_symmetry_quaternions(sym)
@@ -1190,12 +1237,23 @@ def find_similar_regions_by_misorientation(ori_map, phase_mask, sym, tolerance=n
     target_rows = []
     for slice_a, slice_b in directions:
         valid = phase_mask[slice_a] & phase_mask[slice_b]
+        if phase_map is not None:
+            valid &= phase_map[slice_a] == phase_map[slice_b]
         if not np.any(valid):
             continue
 
         q_a = ori_map[slice_a][valid]
         q_b = ori_map[slice_b][valid]
-        same_region = _batch_misorientation_angle(q_a, q_b, sym_ops) <= tolerance
+        if phase_map is None:
+            same_region = _batch_misorientation_angle(q_a, q_b, sym_ops) <= tolerance
+        else:
+            pair_phases = phase_map[slice_a][valid]
+            same_region = np.zeros(len(q_a), dtype=bool)
+            for phase in np.unique(pair_phases):
+                selected = pair_phases == phase
+                same_region[selected] = _batch_misorientation_angle(
+                    q_a[selected], q_b[selected], sym_ops[int(phase)],
+                ) <= tolerance
         if not np.any(same_region):
             continue
 
@@ -2403,7 +2461,7 @@ class EBSDmap:
     npx : int
         Total number of pixels in the map.
     ms_data : list of dict
-        Phase-specific microstructure information including:
+        Microstructure information for each phase, including:
         - name : str — phase name
         - vf : float — volume fraction
         - index : int — phase index
@@ -2416,6 +2474,9 @@ class EBSDmap:
         - gs_data, ar_data, om_data : ndarray — raw distributions
         - gs_moments, ar_moments, om_moments : list — distribution moments
         - graph : object — microstructure graph
+    graph : networkx.Graph or None
+        All retained grains with globally unique IDs and edges across phase
+        boundaries. For one retained phase this is its existing graph object.
     ci_map : ndarray
         Optional confidence index map if available.
     ngrains : int
@@ -2503,6 +2564,7 @@ class EBSDmap:
         self.convex_hull_min_points = int(convex_hull_min_points)
         self.similar_orientation_merge_angle = similar_orientation_merge_angle
         self.ms_data = []
+        self.graph = None
         self.logger = logging.getLogger(__name__)
         if hex_grid_target_spacing is not None and hex_grid_target_spacing <= 0.0:
             raise ValueError("hex_grid_target_spacing must be positive")
@@ -2524,6 +2586,7 @@ class EBSDmap:
             self._prepare_hex_grid()
 
         print(f'Imported EBSD map with {len(self.emap.phases.ids)} phases.')
+        phase_rows = []
         for n_ph, ind, vf in retained_phases:
             data = {
                 "vf": vf,
@@ -2547,33 +2610,44 @@ class EBSDmap:
             ipf_key = ox_plot.IPFColorKeyTSL(data['cs'])
             rgb_values[data['idx']] = ipf_key.orientation2color(data['ori'])
             data['rgb_im'] = rgb_values.reshape(self.sh_x, self.sh_y, 3)
+            phase_rows.append(data)
 
-            graph_rotations = np.full((self.npx, 4), np.nan, dtype=float)
-            graph_rotations[data['idx']] = np.asarray(data['ori'].data)
-            orientation_map = graph_rotations.reshape(self.sh_x, self.sh_y, 4)
-            phase_mask = np.zeros(self.npx, dtype=bool)
-            phase_mask[data['idx']] = True
-            phase_mask = phase_mask.reshape(self.sh_x, self.sh_y)
-            labels, n_regions = find_similar_regions_by_misorientation(
-                orientation_map, phase_mask, data['cs'],
-                tolerance=self.max_angle, connectivity=self.connectivity,
-            )
-            ms_graph = build_graph_from_labeled_pixels(
-                labels, graph_rotations, data['cs'], self.dx, self.dy,
-                connectivity=self.connectivity,
-            )
-            print(f"Phase #{ind} ({data['name']}): Identified Grains: {n_regions}")
-            self._record_graph_grid_geometry(ms_graph)
-            ms_graph.graph.update(phase_id=int(ind), phase_name=data["name"])
-            nx.set_node_attributes(ms_graph, int(ind), "phase_id")
-            nx.set_node_attributes(ms_graph, data["name"], "phase_name")
-            ms_graph.name = 'Graph of microstructure'
-            data['initial_labels'] = labels.copy()
-            data['ori_map_debug'] = orientation_map.copy()
-            data['phase_mask_debug'] = phase_mask.copy()
-            data['graph_initial'] = copy.deepcopy(ms_graph)
-            data['merge_debug'] = []
-            self._prune_graph(ms_graph, data)
+        if len(phase_rows) > 1:
+            self._build_multiphase_graph(phase_rows)
+
+        for data in phase_rows:
+            ind = data["index"]
+            if len(phase_rows) > 1:
+                ms_graph = data["graph"]
+                self.ngrains = len(ms_graph)
+            else:
+                graph_rotations = np.full((self.npx, 4), np.nan, dtype=float)
+                graph_rotations[data['idx']] = np.asarray(data['ori'].data)
+                orientation_map = graph_rotations.reshape(self.sh_x, self.sh_y, 4)
+                phase_mask = np.zeros(self.npx, dtype=bool)
+                phase_mask[data['idx']] = True
+                phase_mask = phase_mask.reshape(self.sh_x, self.sh_y)
+                labels, n_regions = find_similar_regions_by_misorientation(
+                    orientation_map, phase_mask, data['cs'],
+                    tolerance=self.max_angle, connectivity=self.connectivity,
+                )
+                ms_graph = build_graph_from_labeled_pixels(
+                    labels, graph_rotations, data['cs'], self.dx, self.dy,
+                    connectivity=self.connectivity,
+                )
+                print(f"Phase #{ind} ({data['name']}): Identified Grains: {n_regions}")
+                self._record_graph_grid_geometry(ms_graph)
+                ms_graph.graph.update(phase_id=int(ind), phase_name=data["name"])
+                nx.set_node_attributes(ms_graph, int(ind), "phase_id")
+                nx.set_node_attributes(ms_graph, data["name"], "phase_name")
+                ms_graph.name = 'Graph of microstructure'
+                data['initial_labels'] = labels.copy()
+                data['ori_map_debug'] = orientation_map.copy()
+                data['phase_mask_debug'] = phase_mask.copy()
+                data['graph_initial'] = copy.deepcopy(ms_graph)
+                data['merge_debug'] = []
+                self._prune_graph(ms_graph, data)
+                self.graph = ms_graph
             data['ngrains'] = self.ngrains
 
             if graph_only:
@@ -2673,6 +2747,12 @@ class EBSDmap:
             if show_hist:
                 self._plot_phase_histograms(data)
 
+        if len(phase_rows) > 1:
+            for data in self.ms_data:
+                for node_id, node in data["graph"].nodes.items():
+                    self.graph.nodes[node_id].update(node)
+            self.ngrains = len(self.graph)
+
         if show_plot:
             self.plot_mo_map()
             self.plot_ipf_map()
@@ -2687,6 +2767,101 @@ class EBSDmap:
         if felzenszwalb:
             self.plot_felsenszwalb()
         return
+
+    def _build_multiphase_graph(self, phase_rows):
+        """
+        Segment and clean all retained phases in one grain graph.
+
+        Pixel connectivity uses the symmetry of each phase before a single
+        component labeling pass. Grain adjacency includes phase boundaries,
+        while the existing cleanup passes reject merges across those boundaries.
+
+        Parameters
+        ----------
+        phase_rows : list of dict
+            Prepared phases receiving their graphs and cleanup snapshots.
+        """
+        rotations = np.full((self.npx, 4), np.nan)
+        phase_map = np.full(self.npx, -1, dtype=int)
+        symmetries = {}
+        names = {}
+        for data in phase_rows:
+            phase = int(data["index"])
+            rotations[data["idx"]] = data["ori"].data
+            phase_map[data["idx"]] = phase
+            symmetries[phase] = data["cs"]
+            names[phase] = data["name"]
+        phase_map = phase_map.reshape(self.sh_x, self.sh_y)
+        orientations = rotations.reshape(self.sh_x, self.sh_y, 4)
+        labels, count = find_similar_regions_by_misorientation(
+            orientations, phase_map != -1, symmetries, tolerance=self.max_angle,
+            connectivity=self.connectivity, phase_map=phase_map,
+        )
+        graph = build_graph_from_labeled_pixels(
+            labels, rotations, symmetries, self.dx, self.dy,
+            connectivity=self.connectivity, phase_map=phase_map,
+        )
+        for node in graph.nodes.values():
+            node["phase_name"] = names[node["phase_id"]]
+        self._record_graph_grid_geometry(graph)
+        graph.name = "Graph of microstructure"
+        print(f"All retained phases: Identified Grains: {count}")
+        initial = copy.deepcopy(graph)
+        cleanup = {"merge_debug": []}
+        self._prune_graph(graph, cleanup)
+        self.graph = graph
+
+        for data in phase_rows:
+            mask = phase_map == data["index"]
+            initial_nodes = set(np.unique(labels[mask]))
+            data["graph"] = self._extract_phase_graph(graph, data, initial_nodes)
+            data["graph_initial"] = self._extract_phase_graph(initial, data, initial_nodes)
+            data["graph_boundary_merged"] = self._extract_phase_graph(
+                cleanup["graph_boundary_merged"], data, initial_nodes,
+            )
+            data["initial_labels"] = np.where(mask, labels, 0)
+            data["phase_mask_debug"] = mask
+            data["ori_map_debug"] = np.where(mask[..., None], orientations, np.nan)
+            data["merge_debug"] = [
+                record for record in cleanup["merge_debug"] if record["node"] in initial_nodes
+            ]
+
+    def _extract_phase_graph(self, graph, data, initial_nodes):
+        """
+        Extract a phase graph for existing statistics and RVE consumers.
+
+        Grain IDs remain global. Labels and cleanup records outside this phase
+        are excluded from its analysis view; the full graph retains all edges.
+
+        Parameters
+        ----------
+        graph : networkx.Graph
+            Shared graph at one stage of reconstruction.
+        data : dict
+            Phase metadata and pixel indices.
+        initial_nodes : set of int
+            Grain IDs belonging to the phase before cleanup.
+
+        Returns
+        -------
+        networkx.Graph
+            Graph containing this phase with its own symmetry and label map.
+        """
+        nodes = [node for node in graph if graph.nodes[node]["phase_id"] == data["index"]]
+        phase_graph = graph.subgraph(nodes).copy()
+        labels = np.zeros(self.npx, dtype=int)
+        labels[data["idx"]] = graph.graph["label_map"].ravel()[data["idx"]]
+        phase_graph.graph.update(
+            label_map=labels.reshape(self.sh_x, self.sh_y), symmetry=data["cs"],
+            phase_id=int(data["index"]), phase_name=data["name"],
+        )
+        for key in ("boundary_artifact_merge_records", "invalid_hull_merge_records",
+                    "similar_orientation_merge_records", "small_node_merge_records"):
+            if key in graph.graph:
+                phase_graph.graph[key] = [
+                    record for record in graph.graph[key] if record["node"] in initial_nodes
+                ]
+        return phase_graph
 
     def _load_from_data(self, ebsd_data: LoadedEBSDData) -> None:
         """
@@ -3562,7 +3737,10 @@ class EBSDmap:
 
     def plot_grains_marked(self):
         """
-        Plot grains with labels and major/minor axes for all phases
+        Plot grains with labels and major and minor axes for all phases.
+
+        Multiphase maps use compact display indices for colors while retaining
+        the original global grain IDs in annotations and the colorbar.
 
         Notes
         -----
@@ -3573,8 +3751,14 @@ class EBSDmap:
         for data in self.ms_data:
             ngr = data['ngrains']
             cols = get_distinct_colormap(ngr)
-            cmap = LinearSegmentedColormap.from_list('segs', cols, N=ngr)
-            plt.imshow(data['graph'].graph['label_map'] / ngr, cmap=cmap)
+            if len(self.ms_data) > 1:
+                labels = data['graph'].graph['label_map']
+                grain_ids, display_indices = np.unique(labels, return_inverse=True)
+                cmap = ListedColormap(['white'] + cols)
+                plt.imshow(display_indices.reshape(labels.shape), cmap=cmap, vmin=0, vmax=ngr)
+            else:
+                cmap = LinearSegmentedColormap.from_list('segs', cols, N=ngr)
+                plt.imshow(data['graph'].graph['label_map'] / ngr, cmap=cmap)
             for num, node in data['graph'].nodes.items():
                 ctr = data['graph'].nodes[num]['center']
                 plt.annotate(str(num), xy=_graph_points_to_image(data['graph'], ctr))
@@ -3587,7 +3771,10 @@ class EBSDmap:
                 plt.plot(pts[0:2, 0], pts[0:2, 1], color='k')
                 plt.plot(pts[2:4, 0], pts[2:4, 1], color='red')
             plt.title(f"Phase #{data['index']} ({data['name']}): Grain labels and axes: {ngr}")
-            plt.colorbar(label='Grain Number')
+            colorbar = plt.colorbar(label='Grain Number')
+            if len(self.ms_data) > 1:
+                ticks = np.linspace(1, ngr, min(ngr, 10), dtype=int)
+                colorbar.set_ticks(ticks, labels=grain_ids[ticks])
             plt.show()
 
     def get_ipf_image(self, iphase=None):
@@ -3625,6 +3812,7 @@ class EBSDmap:
 
         Grain nodes and edges use one color per phase. Single phase maps keep
         black markers and lines, and individual phases can still be selected.
+        Gray edges record adjacency between grains from different phases.
 
         Parameters
         ----------
@@ -3659,6 +3847,7 @@ class EBSDmap:
         fig, ax = plt.subplots(figsize=(12, 8))
         ax.imshow(self.get_ipf_image(iphase))
         legend = []
+        all_positions = {}
         for data in phases:
             graph = data["graph"]
             color = colors[data["index"]]
@@ -3685,6 +3874,21 @@ class EBSDmap:
                     ax.text(x, y, label, color="white", fontsize=8, ha="center", va="center")
             legend.append(Line2D([], [], color=color, marker="o",
                                  label=f"{data['name']} (phase {data['index']})"))
+            all_positions.update(positions)
+
+        if len(phases) > 1:
+            has_phase_boundary = False
+            for node_a, node_b in self.graph.edges:
+                if _same_phase(self.graph, node_a, node_b):
+                    continue
+                if node_a not in all_positions or node_b not in all_positions:
+                    continue
+                xa, ya = all_positions[node_a]
+                xb, yb = all_positions[node_b]
+                ax.plot([xa, xb], [ya, yb], color="gray", linewidth=line_width, zorder=1.5)
+                has_phase_boundary = True
+            if has_phase_boundary:
+                legend.append(Line2D([], [], color="gray", label="Phase boundary"))
 
         if len(phases) == 1:
             data = phases[0]
