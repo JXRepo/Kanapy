@@ -1520,7 +1520,7 @@ def plot_pole_figure(orientations, phase, vector=None,
 def plot_pole_figure_proj(orientations, phase, vector=None,
                           title=None, alpha=None, size=None):
     """
-    Plot an inverse pole figure (IPF) projection and pole density function for EBSD data
+    Plot an inverse pole figure (IPF) projection and pole density function for EBSD data.
 
     This function visualizes crystal orientations along a specified sample direction
     using an IPF projection. The first subplot shows the scatter of rotated poles,
@@ -1575,14 +1575,17 @@ def plot_pole_figure_proj(orientations, phase, vector=None,
 
     subplot_kw = {"projection": "ipf", "symmetry": phase.point_group.laue, "direction": v}
     fig = plt.figure(figsize=(9, 8))
+    fig.subplots_adjust(hspace=0.5)
+    # leave room for the crystal direction labels above the IPF sector
+    title_pad = plt.rcParams["font.size"] + 12
 
     ax0 = fig.add_subplot(211, **subplot_kw)
     ax0.scatter(t_, s=size, alpha=alpha)
-    _ = ax0.set_title(f"EBSD data, {phase.name}, {v_title}")
+    _ = ax0.set_title(f"EBSD data, {phase.name}, {v_title}", pad=title_pad)
 
     ax2 = fig.add_subplot(212, **subplot_kw)
     ax2.pole_density_function(t_, vmin=vmin, vmax=vmax)
-    _ = ax2.set_title(f"EBSD data, {phase.name}, {v_title}")
+    _ = ax2.set_title(f"EBSD data, {phase.name}, {v_title}", pad=title_pad)
 
     plt.show()
 
