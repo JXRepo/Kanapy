@@ -123,18 +123,15 @@ def test_statistics_preserve_raw_distributions_and_units(tmp_path):
     assert statistics["rve_descriptor"]["Phase"]["Number"] == 0
 
 
-def test_mesh_orientation_colors_use_experimental_symmetry():
+def test_mesh_orientations_preserve_experimental_symmetry():
     """
-    Keep cubic IPF colors when converting generated and imported Euler angles.
+    Preserve crystal symmetry and Euler angles for the RVE pole figures.
     """
     example = load_example()
     mesh = SimpleNamespace(grain_ori_dict={3: [0, 0, 0], 8: [0.2, 0.5, 0.8]})
     orientations = example.mesh_orientations(mesh, symmetry.Oh)
     assert orientations.symmetry == symmetry.Oh
     np.testing.assert_allclose(orientations.to_euler(), [[0, 0, 0], [0.2, 0.5, 0.8]], atol=1e-7)
-    colors = example.knpy.get_ipf_colors(orientations)
-    assert colors.shape == (2, 3)
-    assert not np.allclose(colors[0], colors[1])
 
 
 @pytest.mark.parametrize("preview", [False, True])

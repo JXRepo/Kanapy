@@ -177,7 +177,8 @@ def run_workflow(args):
         )
     orientations = mesh_orientations(ms.mesh, phase["cs"])
     with capture_figures(output, "rve_orientation_ipf", files, args.show):
-        ms.plot_voxels(ori=orientations)
+        # match the voxel coloring used in convert_ang2rve.py
+        ms.plot_voxels(ori=True)
     crystal_phase = ebsd.emap.phases[phase["index"]]
     with capture_figures(output, "rve_pole_figures", files, args.show):
         knpy.plot_pole_figure(orientations, crystal_phase)
@@ -214,7 +215,7 @@ def run_workflow(args):
     for grain, angles in ms.mesh.grain_ori_dict.items():
         np.testing.assert_allclose(restored.mesh.grain_ori_dict[grain], angles)
     with capture_figures(output, "rve_imported_orientation_ipf", files, args.show):
-        restored.plot_voxels(ori=mesh_orientations(restored.mesh, phase["cs"]))
+        restored.plot_voxels(ori=True)
 
     manifest = output / "manifest.json"
     write_manifest(manifest, {
@@ -237,7 +238,7 @@ def mesh_orientations(mesh, crystal_symmetry):
     """
     Convert stored grain Euler angles while preserving their crystal symmetry.
 
-    The resulting object supplies both RVE pole figures and voxel IPF colors.
+    The resulting object supplies the RVE pole figures.
 
     Parameters
     ----------
